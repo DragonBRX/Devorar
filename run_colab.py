@@ -10,6 +10,7 @@ candidate inference begins.
 from __future__ import annotations
 
 import argparse
+import copy
 import gc
 import hashlib
 import importlib.metadata
@@ -34,6 +35,37 @@ BASE_REVISION = "f8027fd0eaeea54caa13c31d31b9fdc459c38b49"
 DONOR_MODEL = "HuggingFaceTB/SmolLM2-360M-Instruct"
 DONOR_REVISION = "a10cc1512eabd3dde888204e902eca88bddb4951"
 SOURCE_LICENSE = "Apache-2.0"
+PORTABLE_MODEL_NAME = "DragonBRX/Devorar-SmolLM2-360M-Assimilated"
+EVALUATION_SYSTEM_PROMPT = (
+    "You are an AI model in a controlled evaluation. "
+    "Follow the user's instruction exactly."
+)
+DRAGONBRX_PRESENTATION_SYSTEM_PROMPT = (
+    "You are DragonBRX Assimilated, an experimental AI model created by "
+    "direct parameter-space assimilation. Give clear final answers and concise, "
+    "verifiable explanations. Never claim access to hidden chain-of-thought."
+)
+DRAGONBRX_CHAT_TEMPLATE = """{%- if messages|length == 0 -%}
+{{- raise_exception('At least one message is required.') -}}
+{%- endif -%}
+{%- if messages[0]['role'] != 'system' -%}
+{{- '<|im_start|>system\n' + dragonbrx_default_system + '<|im_end|>\n' -}}
+{%- endif -%}
+{%- for message in messages -%}
+{%- if message['role'] not in ['system', 'user', 'assistant'] -%}
+{{- raise_exception('Only system, user, and assistant roles are supported.') -}}
+{%- endif -%}
+{%- if message['role'] == 'system' and not loop.first -%}
+{{- raise_exception('A system message is only allowed in first position.') -}}
+{%- endif -%}
+{{- '<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>\n' -}}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+{{- '<|im_start|>assistant\n' -}}
+{%- endif -%}""".replace(
+    "dragonbrx_default_system",
+    repr(DRAGONBRX_PRESENTATION_SYSTEM_PROMPT),
+)
 OUTPUT_SENTINEL_NAME = ".devorar-output-v1"
 OUTPUT_SENTINEL_CONTENT = "DragonBRX/Devorar managed output v1\n"
 
@@ -292,7 +324,7 @@ def load_causal_lm(
     model = transformers_module.AutoModelForCausalLM.from_pretrained(
         str(snapshot_path),
         config=config,
-        torch_dtype=dtype,
+        dtype=dtype,
         low_cpu_mem_usage=True,
         use_safetensors=True,
         local_files_only=True,
@@ -343,10 +375,13 @@ def evaluate_rule(output: str, rule: Mapping[str, str]) -> bool:
 
 
 def render_prompt(tokenizer: Any, prompt: str) -> str:
-    """Use an available Instruct chat template for both host and candidate."""
+    """Use one explicit neutral presentation for both host and candidate."""
     if getattr(tokenizer, "chat_template", None) and hasattr(tokenizer, "apply_chat_template"):
         return tokenizer.apply_chat_template(
-            [{"role": "user", "content": prompt}],
+            [
+                {"role": "system", "content": EVALUATION_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
             tokenize=False,
             add_generation_prompt=True,
         )
@@ -513,6 +548,7 @@ def compare_evaluations(
     *,
     max_perplexity_ratio: float,
     max_rule_score_drop: float,
+    min_candidate_rule_score: float = 0.50,
 ) -> dict[str, Any]:
     baseline_nll = float(baseline["retention_corpus"]["negative_log_likelihood"])
     candidate_nll = float(candidate["retention_corpus"]["negative_log_likelihood"])
@@ -526,7 +562,9 @@ def compare_evaluations(
     candidate_rules = float(candidate["deterministic_rules"]["score"])
     rule_delta = candidate_rules - baseline_rules
     retention_passed = finite_retention and nll_delta <= math.log(max_perplexity_ratio)
-    rules_passed = rule_delta >= -max_rule_score_drop
+    relative_rules_passed = rule_delta >= -max_rule_score_drop
+    absolute_rules_passed = candidate_rules >= min_candidate_rule_score
+    rules_passed = relative_rules_passed and absolute_rules_passed
     behavioral_transfer_observed = rule_delta > 0.0
     return {
         "perplexity_ratio_candidate_over_host": ratio,
@@ -535,7 +573,12 @@ def compare_evaluations(
         "max_perplexity_ratio": max_perplexity_ratio,
         "retention_passed": retention_passed,
         "deterministic_rule_score_delta": rule_delta,
+        "host_deterministic_rule_score": baseline_rules,
+        "candidate_deterministic_rule_score": candidate_rules,
         "max_rule_score_drop": max_rule_score_drop,
+        "min_candidate_rule_score": min_candidate_rule_score,
+        "relative_rules_passed": relative_rules_passed,
+        "absolute_rules_passed": absolute_rules_passed,
         "rules_passed": rules_passed,
         "behavioral_transfer_observed": behavioral_transfer_observed,
         "quality_gates_passed": retention_passed and rules_passed,
@@ -580,6 +623,57 @@ def _save_with_engine(
     forbidden = [path for pattern in ("*.bin", "*.pt", "*.pth") for path in output_dir.glob(pattern)]
     if forbidden:
         raise RuntimeError(f"Unsafe checkpoint artifacts were produced: {forbidden}")
+
+
+def prepare_output_assets(
+    config: Any,
+    tokenizer: Any,
+    *,
+    dtype: Any,
+    build_id: str,
+    output_state_sha256: str,
+) -> tuple[dict[str, Any], Any, dict[str, Any]]:
+    """Create portable frontend metadata without changing the assimilated weights."""
+    if isinstance(config, Mapping):
+        output_config = copy.deepcopy(dict(config))
+    elif hasattr(config, "to_dict") and callable(config.to_dict):
+        output_config = copy.deepcopy(dict(config.to_dict()))
+    else:
+        raise RuntimeError("Candidate config must be a mapping or expose to_dict()")
+
+    dtype_name = str(dtype).removeprefix("torch.")
+    output_config["_name_or_path"] = PORTABLE_MODEL_NAME
+    output_config["dtype"] = dtype_name
+    output_config.pop("torch_dtype", None)
+    output_config["dragonbrx_assimilation"] = {
+        "build_id": build_id,
+        "method": "dare-delta-direct",
+        "output_state_sha256": output_state_sha256,
+        "weight_dtype": dtype_name,
+        "identity_source": "presentation_layer_not_model_weights",
+    }
+
+    output_tokenizer = copy.deepcopy(tokenizer)
+    output_tokenizer.name_or_path = PORTABLE_MODEL_NAME
+    output_tokenizer.chat_template = DRAGONBRX_CHAT_TEMPLATE
+    init_kwargs = getattr(output_tokenizer, "init_kwargs", None)
+    if isinstance(init_kwargs, dict):
+        init_kwargs["name_or_path"] = PORTABLE_MODEL_NAME
+        init_kwargs["chat_template"] = DRAGONBRX_CHAT_TEMPLATE
+
+    presentation = {
+        "identity": "DragonBRX Assimilated",
+        "identity_source": "chat_template_and_runtime_system_prompt_not_model_weights",
+        "portable_model_name": PORTABLE_MODEL_NAME,
+        "default_system_prompt": DRAGONBRX_PRESENTATION_SYSTEM_PROMPT,
+        "evaluation_system_prompt": EVALUATION_SYSTEM_PROMPT,
+        "chat_template_changed_from_donor": True,
+        "parameter_state_changed_by_assimilation": True,
+        "prompt_delimiter_policy": (
+            "Applications must reject literal <|im_start|> and <|im_end|> in untrusted input."
+        ),
+    }
+    return output_config, output_tokenizer, presentation
 
 
 def audited_donor_forward_calls(assimilation: Any) -> int:
@@ -679,7 +773,25 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     staged_args.output_dir = staging
     try:
         manifest = _run_staged(staged_args, final_output_dir=target)
+        evaluation_summary = manifest.get("evaluation_summary")
+        if (
+            not isinstance(evaluation_summary, Mapping)
+            or evaluation_summary.get("all_gates_passed") is not True
+        ):
+            raise RuntimeError(
+                "Evaluation gates failed; the staged candidate was not promoted."
+            )
         _commit_output_directory(staging, target, overwrite=args.overwrite_output)
+        manifest_sha256 = sha256_file(target / "assimilation-manifest.lira.json")
+        print(f"\nExperimental checkpoint promoted atomically to: {target}")
+        print("Evaluation gates passed: True")
+        print(f"Outer manifest SHA-256: {manifest_sha256}")
+        print(
+            "Verified second command: "
+            f"python {Path(__file__).resolve().with_name('run_model.py')} "
+            f"--output-dir {target} --expected-manifest-sha256 {manifest_sha256}"
+        )
+        print("No automatic canonical Lira promotion was performed.")
         return manifest
     except Exception:
         if staging.exists():
@@ -786,15 +898,44 @@ def _run_staged(args: argparse.Namespace, *, final_output_dir: Path) -> dict[str
         max_process_ram_gib=args.max_process_ram_gib,
     )
 
+    engine_manifest = _jsonable(getattr(assimilation, "manifest", {}))
+    engine_audit = _jsonable(getattr(assimilation, "audit", {}))
+    build_id = str(engine_manifest.get("build_id", ""))
+    output_state_sha256 = str(engine_audit.get("output_state_sha256", ""))
+    if not build_id or not output_state_sha256:
+        raise RuntimeError("Assimilation engine did not provide build/state identity metadata")
+    output_config, output_tokenizer, presentation_layer = prepare_output_assets(
+        donor_config,
+        donor_tokenizer,
+        dtype=dtype,
+        build_id=build_id,
+        output_state_sha256=output_state_sha256,
+    )
+    if isinstance(getattr(assimilation, "manifest", None), dict):
+        assimilation.manifest["presentation_layer"] = copy.deepcopy(presentation_layer)
+    engine_manifest["presentation_layer"] = copy.deepcopy(presentation_layer)
+
     _save_with_engine(
         assimilation,
         model_dir,
-        config=donor_config,
-        # The compatible Instruct tokenizer carries the candidate's chat
-        # template/special-token presentation without invoking the donor model.
-        tokenizer=donor_tokenizer,
+        config=output_config,
+        tokenizer=output_tokenizer,
         overwrite=args.overwrite_output,
     )
+    saved_engine_manifest = json.loads(
+        (model_dir / "lira_manifest.json").read_text(encoding="utf-8")
+    )
+    saved_engine_audit = json.loads((model_dir / "audit.json").read_text(encoding="utf-8"))
+    if not isinstance(saved_engine_manifest, dict) or not isinstance(saved_engine_audit, dict):
+        raise RuntimeError("Saved engine manifest/audit must both be JSON objects")
+    if saved_engine_manifest.get("build_id") != build_id:
+        raise RuntimeError("Saved engine manifest build ID differs from the assimilation result")
+    if saved_engine_audit.get("output_state_sha256") != output_state_sha256:
+        raise RuntimeError("Saved engine audit state hash differs from the assimilation result")
+    # Mirror the exact on-disk records (including their artifact inventory) in
+    # the outer package manifest so the inference runner can cross-check both.
+    engine_manifest = saved_engine_manifest
+    engine_audit = saved_engine_audit
     notices_source = Path(__file__).resolve().with_name("THIRD_PARTY_MODELS.md")
     if not notices_source.is_file():
         raise RuntimeError(f"Missing third-party model notice: {notices_source}")
@@ -802,8 +943,6 @@ def _run_staged(args: argparse.Namespace, *, final_output_dir: Path) -> dict[str
 
     # Preserve only JSON-safe audit data, then release donor, host, and result.
     # Reloading from the saved directory proves that the candidate is standalone.
-    engine_manifest = _jsonable(getattr(assimilation, "manifest", {}))
-    engine_audit = _jsonable(getattr(assimilation, "audit", {}))
     del donor_model
     del base_model
     del base_tokenizer
@@ -833,6 +972,8 @@ def _run_staged(args: argparse.Namespace, *, final_output_dir: Path) -> dict[str
     # The saved candidate now owns its reloaded config/tokenizer assets.
     del donor_tokenizer
     del donor_config
+    del output_tokenizer
+    del output_config
     candidate = evaluate_model(
         candidate_model,
         candidate_tokenizer,
@@ -854,6 +995,7 @@ def _run_staged(args: argparse.Namespace, *, final_output_dir: Path) -> dict[str
         candidate,
         max_perplexity_ratio=args.max_perplexity_ratio,
         max_rule_score_drop=args.max_rule_score_drop,
+        min_candidate_rule_score=args.min_candidate_rule_score,
     )
     evaluation = {
         "host_baseline": baseline,
@@ -865,6 +1007,9 @@ def _run_staged(args: argparse.Namespace, *, final_output_dir: Path) -> dict[str
             "max_new_tokens": args.max_new_tokens,
             "perplexity_tokens": args.perplexity_tokens,
             "max_process_ram_gib": args.max_process_ram_gib,
+            "max_perplexity_ratio": args.max_perplexity_ratio,
+            "max_rule_score_drop": args.max_rule_score_drop,
+            "min_candidate_rule_score": args.min_candidate_rule_score,
         },
     }
     write_json(output_dir / "evaluation.json", evaluation)
@@ -873,9 +1018,11 @@ def _run_staged(args: argparse.Namespace, *, final_output_dir: Path) -> dict[str
     manifest_path = output_dir / "assimilation-manifest.lira.json"
     manifest = {
         "format": "dragonbrx.experimental-parameter-assimilation",
-        "format_version": 1,
+        "format_version": 2,
+        "software_version": "0.2.0",
         "artifact_status": "experimental_non_canonical",
         "canonical_lira": False,
+        "build_id": build_id,
         "promotion": "forbidden_without_separate_review_and_explicit_action",
         "warning": (
             "Research prototype: direct parameter merging does not decode thoughts, "
@@ -889,6 +1036,7 @@ def _run_staged(args: argparse.Namespace, *, final_output_dir: Path) -> dict[str
             "teacher_student_distillation": False,
         },
         "sources": {"host": base_metadata, "donor": donor_metadata},
+        "presentation_layer": presentation_layer,
         "build_guarantees": {
             "donor_forward_calls_build": donor_forward_calls,
             "donor_outputs_used": False,
@@ -915,6 +1063,9 @@ def _run_staged(args: argparse.Namespace, *, final_output_dir: Path) -> dict[str
             "model_directory": "assimilated-model",
             "host": f"{BASE_MODEL}@{BASE_REVISION}",
             "donor": f"{DONOR_MODEL}@{DONOR_REVISION}",
+            "build_id": build_id,
+            "standalone_state_sha256": reloaded_state_sha256,
+            "identity_source": presentation_layer["identity_source"],
             "evaluation_gates_passed": comparison["all_gates_passed"],
             "donor_forward_calls_build": donor_forward_calls,
         },
@@ -925,9 +1076,6 @@ def _run_staged(args: argparse.Namespace, *, final_output_dir: Path) -> dict[str
         if artifact["path"] != manifest_path.name
     ]
     write_json(manifest_path, manifest)
-    print(f"\nExperimental checkpoint ready for atomic promotion to: {final_output_dir}")
-    print(f"Evaluation gates passed: {comparison['all_gates_passed']}")
-    print("No automatic canonical Lira promotion was performed.")
     return manifest
 
 
@@ -978,8 +1126,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--perplexity-tokens", type=bounded_int(64, 1024), default=512)
     parser.add_argument("--max-process-ram-gib", type=bounded_float(3.0, 32.0), default=10.0)
     parser.add_argument("--min-available-ram-gib", type=bounded_float(0.0, 32.0), default=4.0)
-    parser.add_argument("--max-perplexity-ratio", type=bounded_float(1.0, 5.0), default=1.50)
+    parser.add_argument("--max-perplexity-ratio", type=bounded_float(1.0, 5.0), default=1.25)
     parser.add_argument("--max-rule-score-drop", type=bounded_float(0.0, 1.0), default=0.25)
+    parser.add_argument(
+        "--min-candidate-rule-score",
+        type=bounded_float(0.0, 1.0),
+        default=0.50,
+    )
     return parser
 
 

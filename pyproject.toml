@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dragonbrx-devorar"
-version = "0.1.0"
+version = "0.2.0"
 description = "Experimental, auditable direct parameter assimilation for homologous models"
 requires-python = ">=3.10"
 dependencies = [

@@ -203,6 +203,8 @@ class RunnerStaticSafetyTests(unittest.TestCase):
         self.assertLessEqual(args.max_new_tokens, 64)
         self.assertLessEqual(args.perplexity_tokens, 1024)
         self.assertLessEqual(args.max_process_ram_gib, 10.0)
+        self.assertEqual(args.max_perplexity_ratio, 1.25)
+        self.assertEqual(args.min_candidate_rule_score, 0.50)
         alias = run_colab.build_parser().parse_args(["--output", "alias-output"])
         documented = run_colab.build_parser().parse_args(["--output-dir", "documented-output"])
         self.assertEqual(alias.output_dir, Path("alias-output"))
@@ -246,12 +248,25 @@ class RunnerMockTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 (staged_args.output_dir / "new.txt").write_text("new", encoding="utf-8")
-                return {"status": "ok"}
+                (staged_args.output_dir / "assimilation-manifest.lira.json").write_text(
+                    '{"evaluation_summary":{"all_gates_passed":true}}\n',
+                    encoding="utf-8",
+                )
+                return {
+                    "status": "ok",
+                    "evaluation_summary": {"all_gates_passed": True},
+                }
 
             with patch.object(run_colab, "_run_staged", side_effect=fake_run):
                 result = run_colab.run(args)
 
-            self.assertEqual(result, {"status": "ok"})
+            self.assertEqual(
+                result,
+                {
+                    "status": "ok",
+                    "evaluation_summary": {"all_gates_passed": True},
+                },
+            )
             self.assertFalse((target / "old.txt").exists())
             self.assertEqual((target / "new.txt").read_text(encoding="utf-8"), "new")
 
@@ -280,6 +295,28 @@ class RunnerMockTests(unittest.TestCase):
 
             self.assertEqual((target / "old.txt").read_text(encoding="utf-8"), "old")
             self.assertFalse((target / "partial.txt").exists())
+
+    def test_failed_evaluation_gates_are_never_promoted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "candidate"
+            args = SimpleNamespace(
+                output_dir=target,
+                cache_dir=Path(temporary) / "cache",
+                overwrite_output=False,
+            )
+
+            def failed_gates(staged_args, *, final_output_dir):
+                (staged_args.output_dir / run_colab.OUTPUT_SENTINEL_NAME).write_text(
+                    run_colab.OUTPUT_SENTINEL_CONTENT,
+                    encoding="utf-8",
+                )
+                return {"evaluation_summary": {"all_gates_passed": False}}
+
+            with patch.object(run_colab, "_run_staged", side_effect=failed_gates):
+                with self.assertRaisesRegex(RuntimeError, "not promoted"):
+                    run_colab.run(args)
+
+            self.assertFalse(target.exists())
 
     def test_broad_output_target_is_rejected(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "broad output directory"):
@@ -369,7 +406,8 @@ class RunnerMockTests(unittest.TestCase):
         self.assertFalse(model_kwargs["trust_remote_code"])
         self.assertTrue(model_kwargs["local_files_only"])
         self.assertTrue(model_kwargs["use_safetensors"])
-        self.assertEqual(model_kwargs["torch_dtype"], "float16-test")
+        self.assertEqual(model_kwargs["dtype"], "float16-test")
+        self.assertNotIn("torch_dtype", model_kwargs)
         self.assertEqual(tokenizer.pad_token, "<eos>")
 
     def test_deterministic_rules_and_retention_gate_are_pure(self) -> None:
@@ -443,7 +481,71 @@ class RunnerMockTests(unittest.TestCase):
         self.assertEqual(rendered, "<user>ping</user><assistant>")
         self.assertEqual(
             calls,
-            [([{"role": "user", "content": "ping"}], False, True)],
+            [
+                (
+                    [
+                        {
+                            "role": "system",
+                            "content": run_colab.EVALUATION_SYSTEM_PROMPT,
+                        },
+                        {"role": "user", "content": "ping"},
+                    ],
+                    False,
+                    True,
+                )
+            ],
+        )
+
+    def test_candidate_rule_gate_has_an_absolute_floor(self) -> None:
+        baseline = {
+            "retention_corpus": {"negative_log_likelihood": 2.0},
+            "deterministic_rules": {"score": 0.0},
+        }
+        candidate = {
+            "retention_corpus": {"negative_log_likelihood": 2.0},
+            "deterministic_rules": {"score": 0.25},
+        }
+        comparison = run_colab.compare_evaluations(
+            baseline,
+            candidate,
+            max_perplexity_ratio=1.25,
+            max_rule_score_drop=0.25,
+            min_candidate_rule_score=0.50,
+        )
+        self.assertTrue(comparison["behavioral_transfer_observed"])
+        self.assertTrue(comparison["relative_rules_passed"])
+        self.assertFalse(comparison["absolute_rules_passed"])
+        self.assertFalse(comparison["all_gates_passed"])
+
+    def test_output_assets_are_portable_and_identity_is_declared_as_presentation(self) -> None:
+        class FakeConfig:
+            @staticmethod
+            def to_dict() -> dict[str, object]:
+                return {
+                    "model_type": "llama",
+                    "_name_or_path": "/content/private-cache/snapshot",
+                    "dtype": "bfloat16",
+                }
+
+        class FakeTokenizer:
+            name_or_path = "/content/private-cache/snapshot"
+            chat_template = "SmolLM identity"
+            init_kwargs = {"name_or_path": "/content/private-cache/snapshot"}
+
+        config, tokenizer, presentation = run_colab.prepare_output_assets(
+            FakeConfig(),
+            FakeTokenizer(),
+            dtype="torch.float16",
+            build_id="build-test",
+            output_state_sha256="a" * 64,
+        )
+        self.assertEqual(config["_name_or_path"], run_colab.PORTABLE_MODEL_NAME)
+        self.assertEqual(config["dtype"], "float16")
+        self.assertEqual(tokenizer.name_or_path, run_colab.PORTABLE_MODEL_NAME)
+        self.assertIn("DragonBRX Assimilated", tokenizer.chat_template)
+        self.assertEqual(
+            presentation["identity_source"],
+            "chat_template_and_runtime_system_prompt_not_model_weights",
         )
 
     def test_build_audit_must_explicitly_prove_zero_donor_calls(self) -> None:

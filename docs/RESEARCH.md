@@ -20,7 +20,7 @@ parâmetro em uma palavra, resposta ou cadeia de raciocínio.
 | D | Arquiteturas heterogêneas | *stitching*, adaptador ou órgão MoE; não fusão nativa |
 | E | Somente API, sem checkpoint autorizado | impossível no modo estrito sem professor |
 
-A V1 implementa somente a Classe A.
+A implementação atual (V2) cobre somente a Classe A.
 
 ## Pipeline Lira proposto
 

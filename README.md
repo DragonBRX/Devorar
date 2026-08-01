@@ -24,10 +24,48 @@ grava os manifestos e cria `/content/devorar-output.zip`. Não é preciso copiar
 um notebook nem montar uma célula grande. Ao repetir o comando, a saída anterior
 só é substituída se contiver o marcador de propriedade criado pelo Devorar; a
 troca completa ocorre atomicamente depois que a nova execução termina.
+As dependências da V2 fixam `transformers 5.14.1` e uma versão compatível do
+Hugging Face Hub, substituindo a combinação antiga que gerou o aviso de conflito
+com o Gradio no primeiro piloto.
 
 O Colab fornece recursos dinamicamente: RAM, GPU, duração e limites não são
 garantidos. O experimento usa modelos de 360 milhões de parâmetros para caber
 com folga razoável em uma sessão comum e também possui fallback para CPU.
+
+## Rodar o modelo criado
+
+Quando o primeiro comando terminar, execute o checkpoint assimilado em uma
+segunda célula:
+
+```python
+!python Devorar/run_model.py --prompt "Quem é você e como foi criado?"
+```
+
+Antes de gerar texto, `run_model.py` confere o inventário e o SHA-256 dos
+artefatos, carrega somente arquivos locais com `trust_remote_code=False` e
+recalcula o hash lógico do `state_dict`. O modelo doador não é carregado nessa
+execução. Sem `--prompt`, o arquivo roda uma demonstração curta. Ao concluir o
+build, o primeiro comando também imprime o SHA-256 do manifesto e uma versão do
+segundo comando com `--expected-manifest-sha256`; prefira essa linha quando
+quiser detectar alterações ocorridas entre construção e inferência.
+
+Opções úteis:
+
+```python
+# Testar somente checkpoint/tokenizer, sem a identidade de apresentação
+!python Devorar/run_model.py --raw --prompt "Complete: 2 + 3 ="
+
+# Comparar as mesmas entradas com a base pinada (nunca com o doador)
+!python Devorar/run_model.py --compare-host --prompt "Responda somente SIM: a água contém oxigênio?"
+
+# Emitir também o relatório verificável em JSON
+!python Devorar/run_model.py --prompt "Explique adaptação em uma frase." --json-output /content/devorar-inference.json
+```
+
+“DragonBRX Assimilated” é uma identidade declarada pela camada de apresentação.
+Os pesos assimilados são realmente diferentes e produzem suas próprias
+ativações a cada inferência, mas o programa não extrai, copia nem verifica uma
+cadeia de pensamento privada do doador.
 
 ## Primeiro teste
 
@@ -39,6 +77,12 @@ com folga razoável em uma sessão comum e também possui fallback para CPU.
 O cartão oficial informa que a variante Instruct foi criada por SFT e depois
 DPO a partir da família SmolLM2. O código ainda confere nomes, formas, tipos,
 configuração essencial e vocabulário antes de tocar em qualquer tensor.
+
+O primeiro piloto real passou todos os gates: 176.212.442 valores mudaram,
+o escore das quatro regras subiu `+0,50` e a razão de perplexidade foi
+`1,157764`. A V2 preserva a receita observada, mas reduziu o limite de retenção
+para `1,25` e adicionou um piso absoluto de acerto. Veja o
+[relatório auditável do primeiro piloto](docs/FIRST-PILOT.md).
 
 ## O que “devorar” significa neste protótipo
 
@@ -117,7 +161,7 @@ launcher automático.
 
 ## Limites e segurança
 
-- A V1 aceita apenas modelos homólogos; arquiteturas diferentes precisam de
+- A V2 aceita apenas modelos homólogos; arquiteturas diferentes precisam de
   alinhamento, *stitching* ou adaptadores e ficam fora deste teste.
 - Assimilar pesos também pode assimilar vieses, falhas ou *backdoors*.
 - O checkpoint resultante é derivado dos modelos de origem; preserve licença,
@@ -126,5 +170,8 @@ launcher automático.
   ela é uma decisão separada das licenças Apache-2.0 dos modelos de terceiros.
 - Não envie automaticamente o candidato para a Lira estável nem substitua um
   modelo de produção sem avaliação, canário e rollback.
+- Execute a verificação em um diretório local que não esteja sendo alterado por
+  outro processo; hashes detectam alterações, mas não eliminam uma troca de
+  arquivos concorrente entre verificação e carregamento.
 
 Veja [o mapa científico e as próximas classes de compatibilidade](docs/RESEARCH.md).
