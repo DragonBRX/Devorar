@@ -8,6 +8,10 @@ dist/
 .venv/
 devorar-output/
 devorar-output.zip
+devorar-frontier-plan/
+devorar-frontier-plan.zip
+dragonbrx-frontier-tensor-probe.lira.json
+dragonbrx-parameter-probe.lira.json
 assimilation-manifest.lira.json
 *.safetensors
 *.bin

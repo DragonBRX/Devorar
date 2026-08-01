@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dragonbrx-devorar"
-version = "0.2.0"
-description = "Experimental, auditable direct parameter assimilation for homologous models"
+version = "0.3.0"
+description = "Auditable parameter assimilation, frontier weight mapping, and causal probing"
 requires-python = ">=3.10"
 dependencies = [
   "torch>=2.2",

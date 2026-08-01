@@ -67,6 +67,90 @@ Os pesos assimilados são realmente diferentes e produzem suas próprias
 ativações a cada inferência, mas o programa não extrai, copia nem verifica uma
 cadeia de pensamento privada do doador.
 
+## V3 Frontier: mapear sem baixar o modelo inteiro
+
+A V3 possui um scanner independente para checkpoints que não cabem no Colab.
+Ele está fixado no `DeepSeek-V4-Flash` oficial e lê apenas o índice, os configs,
+os primeiros 8 bytes de cada shard e seus cabeçalhos Safetensors por HTTP Range:
+
+```python
+!python Devorar/start_frontier_colab.py
+```
+
+O comando cria `/content/devorar-frontier-plan.zip`. Ele **não** baixa shards
+inteiros, não instancia o doador, não faz inferência e não cria um checkpoint.
+Seu objetivo é responder primeiro se uma receita cabe no armazenamento, RAM e
+runtime, sem gastar dezenas de minutos transferindo pesos inutilmente.
+Cada intervalo aceito fica ligado a um ETag forte e recebe SHA-256; URLs
+assinadas são registradas sem a query, e o token do Hub não entra no manifesto.
+
+Na revisão imutável atualmente fixada, o mapa remoto contém 69.187 tensores em
+46 shards e aproximadamente 148,65 GiB de payload. Cerca de 140,25 GiB são os
+256 experts roteados. O tronco, embeddings, cabeça, roteador e expert
+compartilhado já somam aproximadamente 8,40 GiB no formato misto armazenado.
+Manter ou fundir o equivalente a apenas um expert elevaria o piso estimado para
+8,95 GiB, mas isso não prova execução na T4 nem preservação de conhecimento.
+
+O gate bloqueia materialização porque o checkpoint usa FP4/FP8, enquanto a T4
+exige uma conversão/runtime compatível, e porque um colapso de 256 experts para
+um ou poucos experts está muito além da redução conservadora validada pela
+pesquisa atual. O manifesto registra essa reprovação em vez de chamar uma
+estimativa de “modelo pronto”.
+
+### Ler micropedaços reais dos pesos
+
+Para conferir a hipótese do “pedaço do parâmetro” sem baixar um shard inteiro:
+
+```python
+!python Devorar/frontier_tensor_probe.py
+```
+
+A sonda localiza seis tensores de papéis diferentes e lê pequenas janelas do
+início, meio e fim por HTTP Range. Ela grava hashes, offsets e estatísticas em
+`/content/dragonbrx-frontier-tensor-probe.lira.json`; não grava os bytes crus,
+não instancia o DeepSeek e não executa inferência. Isso confirma que o trecho é
+real e permite comparar armazenamento, dispersão e papel estrutural. Não
+transforma o trecho em texto: sem tokenizer, ativações, camadas vizinhas e
+cabeça de saída, um parâmetro ou micropedaço não consegue responder a um prompt.
+
+## Microscópio de parâmetros e intervenção local
+
+Depois de construir o checkpoint pequeno da V2, é possível medir quais grupos
+de pesos mais influenciaram uma resposta específica:
+
+```python
+!python Devorar/probe_model.py --prompt "Quem é você e como foi criado?"
+```
+
+O microscópio usa uma única retropropagação `gradiente × peso` para ranquear
+tensores, camadas e papéis estruturais, encontra alguns pesos locais de maior
+influência e mede os grupos principais com atenuações pequenas e reversíveis.
+Ao final, confere que o hash do checkpoint voltou exatamente ao valor anterior
+e grava `/content/dragonbrx-parameter-probe.lira.json`.
+
+Para intervir em até oito tensores escolhidos, em vez de aceitar o ranking
+automático, repita o nome canônico exato:
+
+```python
+!python Devorar/probe_model.py --prompt "Quem é você?" --target-tensor model.layers.10.self_attn.q_proj.weight
+```
+
+Esse relatório descreve influência **condicionada ao prompt e à resposta**. Um
+parâmetro isolado não possui tokenizer, contexto ou capacidade de responder, e
+não recebe um significado permanente como “este peso contém esta frase”. Para
+testar causalidade são necessários o restante do grafo e uma intervenção. Em
+um modelo frontier, uma inferência paginada poderia carregar uma camada e os
+experts escolhidos pelo roteador de cada vez; isso reduz o pico de RAM, mas
+continua lendo grande parte do caminho ativo para cada token e exige um runtime
+específico.
+
+Os pesos individuais listados permanecem `proxy_only`: são coordenadas úteis
+para orientar testes, não conceitos decodificados. Uma afirmação causal válida
+tem a forma “reduzir este tensor em 5% mudou a perda desta resposta neste
+prompt”, e não “este tensor significa identidade”. A resposta repetitiva do
+primeiro piloto também não foi sorteada: a geração era *greedy* determinística;
+o texto ruim revelou degeneração do checkpoint, não aleatoriedade do teste.
+
 ## Primeiro teste
 
 | Papel | Checkpoint fixado | Licença |
