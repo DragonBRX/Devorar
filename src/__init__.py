@@ -1,0 +1,41 @@
+"""Public API for the experimental Devorar parameter assimilation engine."""
+
+from .devorar import (
+    AssimilationAudit,
+    AssimilationError,
+    AssimilationRecipe,
+    AssimilationResult,
+    CompatibilityError,
+    DonorForwardProhibited,
+    ModelMetadata,
+    ModelRollback,
+    TensorAudit,
+    apply_result_to_model,
+    assimilate_models,
+    assimilate_state_dict,
+    canonical_config_fingerprint,
+    canonical_tokenizer_fingerprint,
+    dare_assimilate_tensor,
+    save_standalone,
+    state_dict_sha256,
+)
+
+__all__ = [
+    "AssimilationAudit",
+    "AssimilationError",
+    "AssimilationRecipe",
+    "AssimilationResult",
+    "CompatibilityError",
+    "DonorForwardProhibited",
+    "ModelMetadata",
+    "ModelRollback",
+    "TensorAudit",
+    "apply_result_to_model",
+    "assimilate_models",
+    "assimilate_state_dict",
+    "canonical_config_fingerprint",
+    "canonical_tokenizer_fingerprint",
+    "dare_assimilate_tensor",
+    "save_standalone",
+    "state_dict_sha256",
+]
