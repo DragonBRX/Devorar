@@ -113,6 +113,32 @@ real e permite comparar armazenamento, dispersão e papel estrutural. Não
 transforma o trecho em texto: sem tokenizer, ativações, camadas vizinhas e
 cabeça de saída, um parâmetro ou micropedaço não consegue responder a um prompt.
 
+### Executar uma fatia real dos pesos
+
+O gate seguinte transforma uma quantidade delimitada desses pesos em
+computação. Em um Colab com GPU, execute:
+
+```python
+!python Devorar/frontier_head_parity.py --require-cuda
+```
+
+O teste lê por HTTP Range 16 linhas **completas** de `head.weight`, distribuídas
+pelo vocabulário do checkpoint fixado. São 131.072 bytes de payload BF16, em vez
+do shard de aproximadamente 1 GiB. As linhas são decodificadas, multiplicadas na
+GPU por uma entrada oculta sintética e determinística e comparadas com uma
+referência CPU que acumula os mesmos produtos com `math.fsum`. O comando falha se
+o erro de cada logit parcial ultrapassar `atol + rtol × |referência|` e grava
+`/content/dragonbrx-frontier-head-parity.lira.json` com hashes, intervalos,
+dispositivo, tolerâncias e erros.
+
+Esse resultado é uma primeira prova de **pesos remotos → operação numérica**. A
+entrada não é uma ativação produzida pelo DeepSeek; somente algumas linhas da
+cabeça são executadas; o grafo transformer, o roteamento MoE e o vocabulário
+completo não são avaliados. Portanto, mesmo quando o gate passa, ele não é
+paridade dos logits do modelo completo e não autoriza atribuir uma frase ao
+DeepSeek. Esse rótulo exige executar o caminho completo para os mesmos tokens e
+comparar todos os logits do próximo token com um runtime de referência.
+
 ## Microscópio de parâmetros e intervenção local
 
 Depois de construir o checkpoint pequeno da V2, é possível medir quais grupos
@@ -239,9 +265,10 @@ python -m pip install -e ".[test]"
 python -m pytest
 ```
 
-Eles usam redes minúsculas para verificar determinismo, incompatibilidades,
-pesos compartilhados, proibição de `forward` do doador, manifesto, runner e
-launcher automático.
+Eles usam redes minúsculas e transportes em memória para verificar determinismo,
+incompatibilidades, pesos compartilhados, proibição de `forward` do doador,
+manifestos, runner, launcher e paridade da execução delimitada sem acessar o
+checkpoint frontier durante a suíte local.
 
 ## Limites e segurança
 

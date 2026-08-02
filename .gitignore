@@ -11,6 +11,7 @@ devorar-output.zip
 devorar-frontier-plan/
 devorar-frontier-plan.zip
 dragonbrx-frontier-tensor-probe.lira.json
+dragonbrx-frontier-head-parity.lira.json
 dragonbrx-parameter-probe.lira.json
 assimilation-manifest.lira.json
 *.safetensors

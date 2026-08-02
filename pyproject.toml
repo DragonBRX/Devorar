@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dragonbrx-devorar"
-version = "0.3.1"
+version = "0.4.0"
 description = "Auditable parameter assimilation, frontier weight mapping, and causal probing"
 requires-python = ">=3.10"
 dependencies = [

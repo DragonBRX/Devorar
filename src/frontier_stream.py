@@ -34,7 +34,7 @@ from typing import Any, Mapping, Protocol, Sequence
 
 FRONTIER_MANIFEST_FORMAT = "lira.experimental.frontier-weight-map"
 FRONTIER_MANIFEST_VERSION = 1
-USER_AGENT = "DragonBRX-Devorar-Frontier/0.3.1"
+USER_AGENT = "DragonBRX-Devorar-Frontier/0.4.0"
 MAX_JSON_BYTES = 64 * 1024 * 1024
 MAX_SAFETENSORS_HEADER_BYTES = 16 * 1024 * 1024
 MAX_SHARDS = 1_024

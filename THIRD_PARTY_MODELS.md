@@ -23,9 +23,11 @@ os modelos diretamente de suas páginas oficiais com revisões fixadas.
 - Repositório: <https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash>
 - Revisão inspecionada: `60d8d70770c6776ff598c94bb586a859a38244f1`
 - Licença declarada no cartão: MIT
-- Uso nesta versão: `config.json`, índice, cabeçalhos e pequenas janelas de
-  tensores selecionados por HTTP Range; nenhum shard completo, byte bruto
-  amostrado ou checkpoint derivado é redistribuído pelo relatório.
+- Uso nesta versão: `config.json`, índice, cabeçalhos, pequenas janelas e até 64
+  linhas completas BF16 de tensores selecionados por HTTP Range; nenhum shard
+  completo, byte bruto amostrado ou checkpoint derivado é redistribuído pelo
+  relatório. O gate padrão executa 16 linhas de `head.weight` e persiste somente
+  hashes, recibos e resultados numéricos.
 
 Qualquer checkpoint produzido por assimilação permanece sujeito aos termos e
 atribuições aplicáveis aos modelos de origem. Verifique novamente os cartões e

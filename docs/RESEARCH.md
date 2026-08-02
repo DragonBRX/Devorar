@@ -74,6 +74,22 @@ calcula estatísticas sem publicar bytes crus. Isso prova quais bytes foram
 amostrados, mas não prova o hash do tensor completo, significado semântico ou
 capacidade de inferência. A consulta funcional continua exigindo o grafo.
 
+O gate de execução da cabeça acrescenta um degrau estritamente delimitado. Ele
+busca linhas completas BF16 de `head.weight`, gera uma entrada sintética fixada e
+compara a projeção linear em GPU/CPU com uma referência `math.fsum`. Isso prova
+que bytes reais da revisão fixada foram corretamente decodificados e usados em
+uma operação do grafo. Não prova que a entrada exista durante uma inferência do
+DeepSeek nem que os valores parciais sejam logits do modelo: falta produzir a
+ativação pelo caminho completo e comparar o vocabulário inteiro com um runtime
+autoritativo.
+
+```text
+índice + headers              -> anatomia remota
+micropedaços                  -> presença e armazenamento
+linhas completas + entrada fixa -> paridade de uma operação delimitada
+caminho completo + mesma entrada -> paridade real de logits do próximo token
+```
+
 Uma eventual inferência paginada é diferente de compressão. Ela mantém apenas
 o estado oculto e uma camada na memória, usa o roteador para descobrir os
 experts ativos, busca esses tensores por Range, calcula e descarta. O pico de RAM
@@ -95,6 +111,7 @@ O microscópio do checkpoint pequeno combina três níveis de evidência:
 | byte ou peso escalar | não | hash, distribuição e `gradiente × peso` | coordenada candidata |
 | tensor | não | atenuação/ablação reversível | efeito local naquela métrica |
 | cabeça, canal ou expert | não | *activation patching* no grafo | apoio/supressão contextual |
+| linhas da cabeça + ativação sintética | não | paridade CPU/GPU da projeção | execução correta daquela fatia |
 | prefixo de camadas + cabeça de saída | parcialmente | *logit lens* | tendência de tokens, não resposta independente |
 | caminho completo paginado | sim | inferência token a token | resposta real do modelo |
 
