@@ -372,19 +372,27 @@ class InputAndHttpSafetyTests(unittest.TestCase):
         class Response:
             status = 206
 
-            def __init__(self, start, end, etag, payload):
+            def __init__(self, start, end, etag, payload, final_url=None):
                 self.headers = {
                     "Content-Range": f"bytes {start}-{end}/100",
                     "Content-Encoding": "identity",
                     "ETag": etag,
                 }
                 self.payload = payload
+                self.final_url = final_url
 
             def read(self, _limit):
                 return self.payload
 
             def close(self):
                 pass
+
+            def geturl(self):
+                return self.final_url or (
+                    "https://huggingface.co/owner/model/resolve/"
+                    + REVISION
+                    + "/model.safetensors"
+                )
 
         responses = [
             Response(0, 7, '"first"', b"12345678"),
@@ -400,9 +408,61 @@ class InputAndHttpSafetyTests(unittest.TestCase):
         with patch.object(transport, "_open", side_effect=fake_open):
             first = transport.get_range("model.safetensors", 0, 7)
             self.assertEqual(first.etag, '"first"')
-            with self.assertRaisesRegex(FrontierScanError, "identity changed"):
+            with self.assertRaisesRegex(FrontierScanError, "ETag changed"):
                 transport.get_range("model.safetensors", 8, 15)
         self.assertEqual(requests[1].get_header("If-range"), '"first"')
+
+    def test_same_etag_and_size_allow_trusted_cdn_endpoint_rotation(self):
+        class Response:
+            status = 206
+
+            def __init__(self, start, end, final_url, payload):
+                self.headers = {
+                    "Content-Range": f"bytes {start}-{end}/100",
+                    "Content-Encoding": "identity",
+                    "ETag": '"same-object"',
+                }
+                self.final_url = final_url
+                self.payload = payload
+
+            def read(self, _limit):
+                return self.payload
+
+            def close(self):
+                pass
+
+            def geturl(self):
+                return self.final_url
+
+        responses = [
+            Response(
+                0,
+                7,
+                "https://cas-bridge.xethub.hf.co/region-a/blob?signature=one",
+                b"12345678",
+            ),
+            Response(
+                8,
+                15,
+                "https://cdn-lfs.huggingface.co/region-b/blob?signature=two",
+                b"abcdefgh",
+            ),
+        ]
+        requests = []
+
+        def fake_open(request):
+            requests.append(request)
+            return responses.pop(0)
+
+        transport = HuggingFaceRangeTransport(REPO, REVISION, retries=1)
+        with patch.object(transport, "_open", side_effect=fake_open):
+            first = transport.get_range("model.safetensors", 0, 7)
+            second = transport.get_range("model.safetensors", 8, 15)
+
+        self.assertNotEqual(first.final_url, second.final_url)
+        self.assertEqual(first.etag, second.etag)
+        self.assertEqual(requests[1].get_header("If-range"), '"same-object"')
+        self.assertEqual(len(transport.receipts()), 2)
 
     def test_json_receipt_hashes_exact_bytes_and_redacts_signed_query(self):
         payload = b'{"model_type":"tiny"}'

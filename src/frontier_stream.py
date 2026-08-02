@@ -34,7 +34,7 @@ from typing import Any, Mapping, Protocol, Sequence
 
 FRONTIER_MANIFEST_FORMAT = "lira.experimental.frontier-weight-map"
 FRONTIER_MANIFEST_VERSION = 1
-USER_AGENT = "DragonBRX-Devorar-Frontier/0.3"
+USER_AGENT = "DragonBRX-Devorar-Frontier/0.3.1"
 MAX_JSON_BYTES = 64 * 1024 * 1024
 MAX_SAFETENSORS_HEADER_BYTES = 16 * 1024 * 1024
 MAX_SHARDS = 1_024
@@ -144,7 +144,6 @@ class TransferReceipt:
 @dataclass(frozen=True)
 class _RangeBinding:
     etag: str
-    final_url: str
     total_file_bytes: int
 
 
@@ -409,12 +408,10 @@ class HuggingFaceRangeTransport:
             actual_start, actual_end, total = (int(value) for value in match.groups())
             if (actual_start, actual_end) != (start, end) or total <= end:
                 raise FrontierScanError(f"server returned the wrong byte range for {path}")
-            if binding is not None and (
-                etag != binding.etag
-                or final_url != binding.final_url
-                or total != binding.total_file_bytes
-            ):
-                raise FrontierScanError(f"remote shard identity changed during scan: {path}")
+            if binding is not None and etag != binding.etag:
+                raise FrontierScanError(f"remote shard ETag changed during scan: {path}")
+            if binding is not None and total != binding.total_file_bytes:
+                raise FrontierScanError(f"remote shard size changed during scan: {path}")
             payload = response.read(length + 1)
         finally:
             response.close()
@@ -422,11 +419,16 @@ class HuggingFaceRangeTransport:
             raise FrontierScanError(
                 f"range length mismatch for {path}: expected {length}, received {len(payload)}"
             )
-        candidate = _RangeBinding(etag=etag, final_url=final_url, total_file_bytes=total)
+        # The Hub may route consecutive ranges for the same immutable object through
+        # different trusted CDN/Xet endpoints.  Endpoint is provenance, not object
+        # identity; bind the representation to its strong ETag and total byte size.
+        candidate = _RangeBinding(etag=etag, total_file_bytes=total)
         with self._bindings_lock:
             previous = self._bindings.setdefault(path, candidate)
             if previous != candidate:
-                raise FrontierScanError(f"remote shard identity changed during scan: {path}")
+                if previous.etag != candidate.etag:
+                    raise FrontierScanError(f"remote shard ETag changed during scan: {path}")
+                raise FrontierScanError(f"remote shard size changed during scan: {path}")
         payload_sha256 = hashlib.sha256(payload).hexdigest()
         self._record_receipt(
             TransferReceipt(
@@ -728,8 +730,6 @@ def _read_shard_header(
         raise FrontierScanError(f"remote shard size changed during scan: {shard}")
     if prefix.etag is not None and header_chunk.etag != prefix.etag:
         raise FrontierScanError(f"remote shard ETag changed during scan: {shard}")
-    if prefix.final_url is not None and header_chunk.final_url != prefix.final_url:
-        raise FrontierScanError(f"remote shard endpoint changed during scan: {shard}")
     if (
         header_chunk.sha256 is not None
         and header_chunk.sha256 != hashlib.sha256(header_chunk.data).hexdigest()

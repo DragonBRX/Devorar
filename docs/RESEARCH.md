@@ -61,10 +61,12 @@ Assim, um shard de vários GiB pode ter sua anatomia inspecionada transferindo
 apenas seu cabeçalho. Um hash do inventário prova os metadados observados, não o
 conteúdo dos intervalos de pesos que ainda não foram lidos.
 
-Cada segunda leitura do mesmo shard usa `If-Range` e precisa manter ETag forte,
-tamanho e endpoint HTTPS sanitizado. O manifesto conserva o SHA-256 dos bytes
-exatos de cada resposta aceita, além dos hashes canônicos do JSON; credenciais e
-queries assinadas não são persistidas.
+Cada segunda leitura do mesmo shard usa `If-Range` e precisa manter ETag forte e
+tamanho. O Hub pode alternar legitimamente entre endpoints CDN/Xet; cada endpoint
+ainda precisa permanecer no limite HTTPS confiável e é registrado sanitizado no
+recibo, mas não define sozinho a identidade do objeto. O manifesto conserva o
+SHA-256 dos bytes exatos de cada resposta aceita, além dos hashes canônicos do
+JSON; credenciais e queries assinadas não são persistidas.
 
 A sonda de micropedaços acrescenta uma evidência intermediária: busca pequenas
 janelas do payload de tensores selecionados, registra o hash de cada intervalo e
