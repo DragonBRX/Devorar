@@ -184,6 +184,28 @@ def deterministic_float32_hidden(width: int) -> tuple[float, ...]:
     return result
 
 
+def deterministic_float32_hidden_seeded(width: int, seed: int) -> tuple[float, ...]:
+    """Create reproducible float32 synthetic activations for distributed teacher probes."""
+
+    width = _bounded_integer(width, name="hidden width", minimum=1, maximum=MAX_ROW_WIDTH)
+    seed = _bounded_integer(seed, name="hidden seed", minimum=0, maximum=2_147_483_647)
+    phase_a = (seed + 1) * 0.00000011920928955078125
+    phase_b = (seed + 1) * 0.000000059604644775390625
+    raw = [
+        math.sin((index + 1) * 0.017 + phase_a)
+        + 0.5 * math.cos((index + 1) * 0.031 + phase_b)
+        for index in range(width)
+    ]
+    rms = math.sqrt(math.fsum(value * value for value in raw) / width)
+    if not math.isfinite(rms) or rms == 0.0:
+        raise FrontierScanError("seeded deterministic hidden vector has an invalid RMS")
+    payload = struct.pack(f"<{width}f", *(value / rms for value in raw))
+    result = tuple(value[0] for value in struct.iter_unpack("<f", payload))
+    if not all(math.isfinite(value) for value in result):
+        raise FrontierScanError("seeded deterministic hidden vector contains non-finite values")
+    return result
+
+
 def float32_sha256(values: Sequence[float]) -> str:
     if not values:
         raise FrontierScanError("cannot hash an empty float32 vector")
@@ -274,6 +296,7 @@ __all__ = [
     "compare_logits",
     "decode_bfloat16_le",
     "deterministic_float32_hidden",
+    "deterministic_float32_hidden_seeded",
     "float32_sha256",
     "load_complete_bf16_rows",
     "reference_linear_logits",

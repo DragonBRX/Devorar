@@ -139,6 +139,67 @@ paridade dos logits do modelo completo e não autoriza atribuir uma frase ao
 DeepSeek. Esse rótulo exige executar o caminho completo para os mesmos tokens e
 comparar todos os logits do próximo token com um runtime de referência.
 
+
+## Cluster distribuído: PC coordenador + celulares Termux
+
+A etapa distribuída permite juntar vários Android/Termux e PCs. O PC mantém uma fila persistente, enquanto cada worker lê somente os intervalos necessários dos pesos remotos do DeepSeek por HTTP Range, executa a operação localmente e devolve o resultado numérico ao coordenador.
+
+### Instalação automática do Termux em um único bloco
+
+No PC, dentro do repositório:
+
+```bash
+python distributed_server.py --host 0.0.0.0 --port 8765
+```
+
+Ao iniciar, o coordenador imprime entre `TERMUX: COLE ESTE BLOCO INTEIRO` e `FIM DO BLOCO TERMUX` um comando completo já contendo o IP local detectado, a porta e o token do cluster. Em **cada celular com o aplicativo Termux recém-instalado**, cole o bloco inteiro e pressione Enter. Não é necessário instalar Python, Git ou tmux manualmente antes.
+
+O bloco gerado tem esta estrutura; os valores reais de `IP_DO_PC` e `TOKEN_GERADO_PELO_PC` saem preenchidos automaticamente pelo coordenador:
+
+```bash
+pkg update -y && pkg install -y python git tmux && \
+if [ -d "$HOME/Devorar/.git" ]; then git -C "$HOME/Devorar" pull --ff-only; else git clone --depth 1 https://github.com/DragonBRX/Devorar.git "$HOME/Devorar"; fi && \
+cd "$HOME/Devorar" && chmod +x termux_install.sh && \
+DEVORAR_SERVER=http://IP_DO_PC:8765 DEVORAR_CLUSTER_TOKEN=TOKEN_GERADO_PELO_PC DEVORAR_PROCESSES=1 ./termux_install.sh
+```
+
+O instalador:
+
+- atualiza o índice de pacotes do Termux;
+- instala `python`, `git` e `tmux`;
+- usa o repositório em `~/Devorar`;
+- grava IP, token, nome do worker e quantidade de processos com permissão `600`;
+- instala o comando `devorar-worker` no próprio `$PREFIX/bin`;
+- inicia o worker dentro de uma sessão `tmux` em segundo plano;
+- mantém um supervisor que reconecta automaticamente se o PC ou a rede ficarem indisponíveis;
+- deixa o worker em polling contínuo mesmo depois de concluir os jobs atuais, pronto para novos trabalhos enviados pelo PC.
+
+Se a detecção automática do IP escolher a interface errada, inicie o PC especificando o endereço que os celulares enxergam:
+
+```bash
+python distributed_server.py --host 0.0.0.0 --port 8765 --advertise-host 192.168.1.10
+```
+
+Para já configurar dois processos em cada celular no bloco gerado:
+
+```bash
+python distributed_server.py --termux-processes 2
+```
+
+Depois da instalação, os comandos úteis no celular são:
+
+```bash
+devorar-worker status
+devorar-worker logs
+devorar-worker restart
+devorar-worker stop
+devorar-worker start
+```
+
+É possível exportar os resultados no PC com `python distributed_export.py` e treinar o primeiro surrogate low-rank da cabeça remota com `python distributed_train_head.py`. O worker atual usa somente a biblioteca padrão do Python e o código Frontier existente; PyTorch é necessário somente no PC para o treinamento do `student-head`.
+
+Este estágio já é computação distribuída real sobre pesos remotos, mas **ainda não é uma distilação completa do DeepSeek**. Ele trabalha com linhas BF16 de `head.weight` e ativações sintéticas. O transformer inteiro, o roteamento MoE e os formatos quantizados do corpo ainda precisam de um runtime paginado validado antes que o DeepSeek possa ser tratado como professor de linguagem via pesos remotos. Veja [docs/DISTRIBUTED-TERMUX.md](docs/DISTRIBUTED-TERMUX.md).
+
 ## Microscópio de parâmetros e intervenção local
 
 Depois de construir o checkpoint pequeno da V2, é possível medir quais grupos
