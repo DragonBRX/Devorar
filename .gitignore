@@ -17,3 +17,4 @@ assimilation-manifest.lira.json
 *.safetensors
 *.bin
 *.gguf
+cluster-state/
