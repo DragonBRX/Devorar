@@ -56,7 +56,7 @@ hardware() {
 case "$ACTION" in
     start)
         tmux has-session -t "$SESSION" 2>/dev/null || tmux new-session -d -s "$SESSION" "$PREFIX/bin/devorar-worker foreground"
-        echo "Worker ativo: $DEVORAR_WORKER_NAME -> $DEVORAR_SERVER"
+        echo "Worker ativo: $DEVORAR_WORKER_NAME -> PC Devorar descoberto automaticamente"
         hardware
         ;;
     stop)
@@ -67,7 +67,7 @@ case "$ACTION" in
     restart)
         tmux kill-session -t "$SESSION" 2>/dev/null || true
         tmux new-session -d -s "$SESSION" "$PREFIX/bin/devorar-worker foreground"
-        echo "Worker reiniciado: $DEVORAR_WORKER_NAME -> $DEVORAR_SERVER"
+        echo "Worker reiniciado: $DEVORAR_WORKER_NAME"
         hardware
         ;;
     reinstall)
@@ -76,12 +76,12 @@ case "$ACTION" in
         rm -rf "$HOME/Devorar"
         git clone --depth 1 https://github.com/DragonBRX/Devorar.git "$HOME/Devorar"
         cd "$HOME/Devorar"
-        chmod +x termux_device_install.sh
-        DEVORAR_SERVER="$DEVORAR_SERVER" DEVORAR_CLUSTER_TOKEN="$DEVORAR_CLUSTER_TOKEN" DEVORAR_PROCESSES="$DEVORAR_PROCESSES" DEVORAR_WORKER_NAME="$DEVORAR_WORKER_NAME" ./termux_device_install.sh
+        chmod +x termux_auto_install.sh
+        DEVORAR_WORKER_NAME="$DEVORAR_WORKER_NAME" ./termux_auto_install.sh
         ;;
     status)
         if tmux has-session -t "$SESSION" 2>/dev/null; then STATE="ativo"; else STATE="parado"; fi
-        echo "Worker $STATE: $DEVORAR_WORKER_NAME -> $DEVORAR_SERVER"
+        echo "Worker $STATE: $DEVORAR_WORKER_NAME"
         hardware
         ;;
     hardware|info)
@@ -95,7 +95,7 @@ case "$ACTION" in
         cd "$DEVORAR_HOME"
         trap 'exit 0' INT TERM
         while true; do
-            printf '[%s] conectando %s -> %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$DEVORAR_WORKER_NAME" "$DEVORAR_SERVER" >> "$LOG_FILE"
+            printf '[%s] procurando/conectando ao PC Devorar\n' "$(date '+%Y-%m-%d %H:%M:%S')" >> "$LOG_FILE"
             set +e
             python device_worker.py --server "$DEVORAR_SERVER" --name "$DEVORAR_WORKER_NAME" --processes "$DEVORAR_PROCESSES" >> "$LOG_FILE" 2>&1
             CODE=$?

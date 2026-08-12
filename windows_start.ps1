@@ -1,9 +1,10 @@
 param(
     [ValidateRange(1, 65535)]
     [int]$Port = 8765,
+    [ValidateRange(1, 65535)]
+    [int]$DiscoveryPort = 8764,
     [ValidateRange(1, 16)]
-    [int]$TermuxProcesses = 1,
-    [string]$AdvertiseHost = ""
+    [int]$TermuxProcesses = 1
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,29 +16,38 @@ function Test-Administrator {
 }
 
 function Enable-DevorarFirewall {
-    param([int]$LocalPort)
-    $ruleName = "Devorar Coordinator TCP $LocalPort"
+    param(
+        [int]$TcpPort,
+        [int]$UdpPort
+    )
+
+    $tcpRule = "Devorar Coordinator TCP $TcpPort"
+    $udpRule = "Devorar Discovery UDP $UdpPort"
+
     if (Test-Administrator) {
-        $existing = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
-        if (-not $existing) {
-            New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Action Allow -Protocol TCP -LocalPort $LocalPort -Profile Any -RemoteAddress LocalSubnet | Out-Null
+        if (-not (Get-NetFirewallRule -DisplayName $tcpRule -ErrorAction SilentlyContinue)) {
+            New-NetFirewallRule -DisplayName $tcpRule -Direction Inbound -Action Allow -Protocol TCP -LocalPort $TcpPort -Profile Any -RemoteAddress LocalSubnet | Out-Null
         }
-        Write-Host "Firewall: porta TCP $LocalPort liberada para a rede local."
+        if (-not (Get-NetFirewallRule -DisplayName $udpRule -ErrorAction SilentlyContinue)) {
+            New-NetFirewallRule -DisplayName $udpRule -Direction Inbound -Action Allow -Protocol UDP -LocalPort $UdpPort -Profile Any -RemoteAddress LocalSubnet | Out-Null
+        }
+        Write-Host "Firewall: rede local autorizada para o Devorar."
         return
     }
 
-    $escapedRule = $ruleName.Replace("'", "''")
-    $command = "`$rule = Get-NetFirewallRule -DisplayName '$escapedRule' -ErrorAction SilentlyContinue; if (-not `$rule) { New-NetFirewallRule -DisplayName '$escapedRule' -Direction Inbound -Action Allow -Protocol TCP -LocalPort $LocalPort -Profile Any -RemoteAddress LocalSubnet | Out-Null }"
-    Write-Host "O Windows vai pedir permissao de administrador para liberar a porta $LocalPort no Firewall."
+    $escapedTcpRule = $tcpRule.Replace("'", "''")
+    $escapedUdpRule = $udpRule.Replace("'", "''")
+    $command = "`$tcp = Get-NetFirewallRule -DisplayName '$escapedTcpRule' -ErrorAction SilentlyContinue; if (-not `$tcp) { New-NetFirewallRule -DisplayName '$escapedTcpRule' -Direction Inbound -Action Allow -Protocol TCP -LocalPort $TcpPort -Profile Any -RemoteAddress LocalSubnet | Out-Null }; `$udp = Get-NetFirewallRule -DisplayName '$escapedUdpRule' -ErrorAction SilentlyContinue; if (-not `$udp) { New-NetFirewallRule -DisplayName '$escapedUdpRule' -Direction Inbound -Action Allow -Protocol UDP -LocalPort $UdpPort -Profile Any -RemoteAddress LocalSubnet | Out-Null }"
+    Write-Host "O Windows vai pedir permissao de administrador para habilitar a rede local do Devorar."
     $process = Start-Process -FilePath "powershell.exe" -Verb RunAs -Wait -PassThru -ArgumentList @(
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
         "-Command", $command
     )
     if ($process.ExitCode -ne 0) {
-        throw "Nao foi possivel liberar a porta $LocalPort no Firewall do Windows."
+        throw "Nao foi possivel configurar o Firewall do Windows para o Devorar."
     }
-    Write-Host "Firewall: porta TCP $LocalPort liberada para a rede local."
+    Write-Host "Firewall: rede local autorizada para o Devorar."
 }
 
 function Invoke-PythonServer {
@@ -55,18 +65,17 @@ function Invoke-PythonServer {
 
 $repo = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $repo
-Enable-DevorarFirewall -LocalPort $Port
+Enable-DevorarFirewall -TcpPort $Port -UdpPort $DiscoveryPort
 
 $serverArgs = @(
     "windows_server.py",
     "--host", "0.0.0.0",
     "--port", "$Port",
+    "--discovery-port", "$DiscoveryPort",
     "--termux-processes", "$TermuxProcesses"
 )
-if ($AdvertiseHost.Trim()) {
-    $serverArgs += @("--advertise-host", $AdvertiseHost.Trim())
-}
 
-Write-Host "Iniciando Devorar no PowerShell..."
+Write-Host "Abrindo o servico Devorar..."
+Write-Host "Aguarde apenas a mensagem 'DEVORAR ONLINE'. Depois disso o PC ja estara pronto."
 $exitCode = Invoke-PythonServer -ServerArguments $serverArgs
 exit $exitCode
