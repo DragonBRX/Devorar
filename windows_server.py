@@ -168,7 +168,6 @@ def _prepare_jobs_loop(
     retry_seconds = 5
     while not stop.is_set():
         try:
-            print("[SEGUNDO PLANO] Preparando os jobs remotos do DeepSeek. O servidor continua pronto para celulares.", flush=True)
             jobs, plan_meta = base.build_jobs(args)
             added = state.add_jobs(jobs)
             (state_dir / "plan.json").write_text(
@@ -176,14 +175,14 @@ def _prepare_jobs_loop(
                 encoding="utf-8",
             )
             print(
-                f"[SEGUNDO PLANO] Jobs prontos: {plan_meta['jobs']} jobs / {plan_meta['selected_rows']} linhas; novos={added}.",
+                f"\n[SEGUNDO PLANO CONCLUÍDO] DeepSeek pronto: {plan_meta['jobs']} jobs / {plan_meta['selected_rows']} linhas; novos={added}.\n",
                 flush=True,
             )
             return
         except Exception as error:
             print(
-                f"[SEGUNDO PLANO] DeepSeek ainda não pôde ser preparado ({type(error).__name__}: {error}). "
-                f"O servidor segue ONLINE; nova tentativa em {retry_seconds}s.",
+                f"\n[SEGUNDO PLANO] DeepSeek ainda não pôde ser preparado ({type(error).__name__}: {error}). "
+                f"O servidor continua ONLINE e aguardando celulares; nova tentativa em {retry_seconds}s.\n",
                 file=sys.stderr,
                 flush=True,
             )
@@ -291,8 +290,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("=== FIM REINSTALAÇÃO TERMUX ===\n", flush=True)
             print("Não é necessário informar IP, porta ou token no celular.", flush=True)
 
-        _print_ready_banner(discovery_socket is not None)
-
         stop = threading.Event()
         discovery_thread = None
         if discovery_socket is not None:
@@ -329,6 +326,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 name="devorar-job-preparation",
             )
             jobs_thread.start()
+
+        _print_ready_banner(discovery_thread is not None)
 
         try:
             server.serve_forever(poll_interval=0.5)
