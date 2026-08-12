@@ -60,12 +60,25 @@ class HardwareCoordinatorHandler(base.CoordinatorHandler):
             self._json(500, {"ok": False, "error": f"internal error: {type(error).__name__}"})
 
 
-def _termux_block(server_url: str, token: str, processes: int) -> str:
+def _termux_install_block(server_url: str, token: str, processes: int) -> str:
     continuation = " " + chr(92)
     return "\n".join(
         (
             "pkg update -y && pkg install -y python git tmux &&" + continuation,
             'if [ -d "$HOME/Devorar/.git" ]; then git -C "$HOME/Devorar" pull --ff-only; else git clone --depth 1 https://github.com/DragonBRX/Devorar.git "$HOME/Devorar"; fi &&' + continuation,
+            'cd "$HOME/Devorar" && chmod +x termux_device_install.sh &&' + continuation,
+            f"DEVORAR_SERVER={shlex.quote(server_url)} DEVORAR_CLUSTER_TOKEN={shlex.quote(token)} DEVORAR_PROCESSES={shlex.quote(str(processes))} ./termux_device_install.sh",
+        )
+    )
+
+
+def _termux_reinstall_block(server_url: str, token: str, processes: int) -> str:
+    continuation = " " + chr(92)
+    return "\n".join(
+        (
+            "pkg update -y && pkg install -y python git tmux &&" + continuation,
+            '(tmux kill-session -t devorar-worker 2>/dev/null || true) &&' + continuation,
+            'rm -rf "$HOME/Devorar" && git clone --depth 1 https://github.com/DragonBRX/Devorar.git "$HOME/Devorar" &&' + continuation,
             'cd "$HOME/Devorar" && chmod +x termux_device_install.sh &&' + continuation,
             f"DEVORAR_SERVER={shlex.quote(server_url)} DEVORAR_CLUSTER_TOKEN={shlex.quote(token)} DEVORAR_PROCESSES={shlex.quote(str(processes))} ./termux_device_install.sh",
         )
@@ -195,11 +208,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         print_dashboard(state, "inicialização")
         if not args.no_termux_block:
-            print("=== TERMUX: COLE ESTE BLOCO INTEIRO EM CADA CELULAR ===", flush=True)
-            print(_termux_block(server_url, token, args.termux_processes), flush=True)
-            print("=== FIM DO BLOCO TERMUX ===\n", flush=True)
+            print("=== TERMUX: INSTALAÇÃO DO ZERO / CONECTAR ===", flush=True)
+            print(_termux_install_block(server_url, token, args.termux_processes), flush=True)
+            print("=== FIM INSTALAÇÃO TERMUX ===\n", flush=True)
+            print("=== TERMUX: REINSTALAÇÃO LIMPA ===", flush=True)
+            print(_termux_reinstall_block(server_url, token, args.termux_processes), flush=True)
+            print("=== FIM REINSTALAÇÃO TERMUX ===\n", flush=True)
             print(
-                "O bloco acima já pode ser usado agora. Os celulares podem conectar e aguardar enquanto os jobs são preparados.",
+                "Os blocos acima já podem ser usados agora. Os celulares conectam e aguardam enquanto os jobs são preparados.",
                 flush=True,
             )
 
