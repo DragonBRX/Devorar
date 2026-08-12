@@ -1,171 +1,183 @@
-# Cluster distribuído PC + Termux
+# Devorar distribuído: Windows PowerShell + Termux
 
-Esta etapa adiciona um coordenador no PC e workers leves para Android/Termux ou outros PCs.
-O objetivo é usar vários dispositivos para executar trabalho numérico sobre fatias reais dos pesos remotos do DeepSeek sem baixar o checkpoint completo em cada aparelho.
+## Objetivo
 
-## Arquitetura
+O PC Windows funciona como coordenador persistente. Os celulares Android com Termux funcionam como workers. Cada worker recebe um job, lê somente os intervalos necessários do checkpoint remoto via HTTP Range, calcula localmente e devolve o resultado ao PC.
+
+O cluster atual não baixa o DeepSeek inteiro em cada aparelho e não apresenta a fatia executada como uma inferência completa do modelo.
+
+## Inicialização do PC
+
+### Bloco automático
+
+No PowerShell:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass -Force; irm https://raw.githubusercontent.com/DragonBRX/Devorar/main/windows_install.ps1 | iex
+```
+
+O script instala Python pelo `winget` quando necessário, baixa o repositório, cria a regra de Firewall para a porta 8765 limitada a `LocalSubnet` e executa `windows_start.ps1`.
+
+A criação da regra pode gerar uma solicitação UAC do Windows. O script não tenta contornar essa proteção.
+
+### Execução depois da instalação
+
+```powershell
+cd $HOME\Devorar
+.\windows_start.ps1
+```
+
+Parâmetros:
+
+```powershell
+.\windows_start.ps1 -Port 8765 -TermuxProcesses 2 -AdvertiseHost 192.168.1.10
+```
+
+`AdvertiseHost` só é necessário quando a detecção automática escolher um IP que os celulares não conseguem alcançar.
+
+## Instalação dos celulares
+
+O coordenador imprime um bloco completo com:
+
+- endereço HTTP do PC;
+- porta;
+- token do cluster;
+- quantidade de processos por aparelho.
+
+Cole esse bloco diretamente em um Termux recém-instalado. Ele executa `pkg update`, instala Python/Git/tmux, baixa o Devorar, configura o aparelho e inicia o worker.
+
+O worker fica em segundo plano dentro de uma sessão tmux e continua em polling depois de concluir os jobs disponíveis.
+
+## Identidade de dispositivo
+
+Na primeira instalação o Termux gera `DEVORAR_DEVICE_ID`, salvo em:
 
 ```text
-Hugging Face / DeepSeek-V4-Flash
-          │
-          │ HTTP Range
-          ├──────────────► celular Termux 1 ─┐
-          ├──────────────► celular Termux 2 ─┤
-          ├──────────────► celular Termux N ─┤
-          │                                  │ resultados numéricos
-          └──────────────► worker no PC ─────┤
-                                             ▼
-                                      PC coordenador
-                                      SQLite persistente
-                                             │
-                                             ├─ exporta dataset numérico
-                                             └─ treina student-head experimental
+~/.config/devorar/worker.env
 ```
 
-O PC cria jobs a partir do índice e do cabeçalho Safetensors. Cada job contém somente identidade imutável da fonte, posição do tensor, algumas linhas e seeds determinísticas. O worker lê somente essas linhas diretamente do Hugging Face, decodifica BF16, executa projeções locais e devolve logits parciais ao PC.
+Todos os processos do mesmo celular usam esse ID. Assim o painel do PC pode agrupar vários slots/processos como um único aparelho físico.
 
-O cluster não envia os pesos completos para o PC. O coordenador persiste fila, leases, tentativas, workers e resultados em `cluster-state/cluster.sqlite3`. Se um celular cair, o lease expira e o job volta para a fila.
+O nome padrão tenta usar fabricante e modelo Android e acrescenta os primeiros caracteres do ID persistente.
 
-## 1. Iniciar o coordenador no PC
+## Telemetria de hardware
 
-No diretório do projeto:
+A telemetria é coletada sem `psutil`:
 
-```bash
-python distributed_server.py --host 0.0.0.0 --port 8765
-```
+- Windows: `GlobalMemoryStatusEx` para RAM;
+- Linux/Android: `/proc/meminfo`;
+- fallback Unix: `os.sysconf`;
+- CPU: `platform`, variáveis do Windows e `/proc/cpuinfo`;
+- Android: `getprop` para fabricante, modelo e versão quando disponível.
 
-Na primeira execução são criados:
+Cada registro/heartbeat pode conter:
 
 ```text
-cluster-state/cluster-token.txt
-cluster-state/cluster.sqlite3
-cluster-state/plan.json
+device_id
+hostname
+device_label
+system
+release
+machine
+python
+cpu_model
+cpu_logical_cores
+ram_total_bytes
+ram_available_bytes
+ram_used_bytes
+ram_usage_percent
+android_manufacturer
+android_model
+android_version
+slot
+pid
 ```
 
-O coordenador também imprime um bloco completo de instalação do Termux já preenchido com o endereço do PC e o token. O segredo continua sendo usado em HMAC-SHA256 nas requisições; o bloco o grava em `~/.config/devorar/worker.env` com permissão `600`.
+O heartbeat atualiza a RAM disponível enquanto o worker está funcionando.
 
-Se o endereço detectado automaticamente não for acessível pelos celulares, force o IP da interface LAN:
+## Painel do PC
 
-```bash
-python distributed_server.py --host 0.0.0.0 --port 8765 --advertise-host 192.168.1.10
+O servidor imprime o hardware do PC na inicialização e, por padrão, atualiza o painel a cada 15 segundos.
+
+```powershell
+python distributed_server.py --status-seconds 15
 ```
 
-Para gerar o bloco configurando mais processos por aparelho:
+O painel agrega os registros por `device_id`, evitando contar cada processo como um telefone diferente.
 
-```bash
-python distributed_server.py --termux-processes 2
-```
+`--status-seconds 0` desliga apenas a impressão periódica.
 
-O padrão cria 256 jobs, com 4 linhas remotas e 8 ativações sintéticas por job:
+## Informações no próprio celular
 
-```bash
-python distributed_server.py --job-count 256 --rows-per-job 4 --samples-per-job 8
-```
-
-Aumentar `--samples-per-job` aumenta principalmente o cálculo local sem aumentar proporcionalmente os bytes de pesos baixados, porque as mesmas linhas são reutilizadas para várias ativações.
-
-A fonte também é configurável, mas a revisão deve ser um SHA imutável de 40 caracteres:
-
-```bash
-python distributed_server.py --source-model deepseek-ai/DeepSeek-V4-Flash --source-revision SHA_IMUTAVEL_DE_40_CARACTERES
-```
-
-O padrão continua usando a revisão já fixada pelo projeto para que execuções e manifestos sejam reproduzíveis.
-
-## 2. Preparar cada Android com Termux
-
-Depois de instalar o aplicativo Termux, **não instale nada manualmente**. Pegue o bloco que o PC imprimiu e cole inteiro no terminal do celular.
-
-A forma genérica é:
-
-```bash
-pkg update -y && pkg install -y python git tmux && \
-if [ -d "$HOME/Devorar/.git" ]; then git -C "$HOME/Devorar" pull --ff-only; else git clone --depth 1 https://github.com/DragonBRX/Devorar.git "$HOME/Devorar"; fi && \
-cd "$HOME/Devorar" && chmod +x termux_install.sh && \
-DEVORAR_SERVER=http://IP_DO_PC:8765 DEVORAR_CLUSTER_TOKEN=TOKEN_GERADO_PELO_PC DEVORAR_PROCESSES=1 ./termux_install.sh
-```
-
-O bloco real gerado pelo PC já substitui os placeholders. `termux_install.sh` instala o ambiente, registra uma identidade persistente para o aparelho e inicia `devorar-worker` em uma sessão `tmux` desacoplada do terminal.
-
-O worker agora permanece ativo quando a fila fica vazia. Assim, concluir um lote não encerra o celular: ele continua consultando o PC e pega automaticamente jobs criados depois. Um supervisor reinicia a conexão após falhas de rede ou reinício do coordenador.
-
-Comandos locais:
+Depois da instalação:
 
 ```bash
 devorar-worker status
-devorar-worker logs
-devorar-worker restart
-devorar-worker stop
-devorar-worker start
 ```
 
-Em aparelhos com pouca RAM ou que esquentam muito, prefira `DEVORAR_PROCESSES=1`. Outros computadores podem executar `distributed_worker.py` diretamente ou usar uma configuração equivalente.
+mostra se o worker está ativo e imprime CPU/núcleos/RAM do aparelho.
 
-## 3. Acompanhar o cluster
+Também existe:
 
-O coordenador mostra jobs concluídos no terminal. O estado também pode ser consultado por um cliente assinado através de `/v1/status`.
+```bash
+devorar-worker hardware
+```
 
-A base SQLite torna a execução retomável: fechar e abrir `distributed_server.py` novamente com o mesmo `--state-dir` preserva resultados e jobs já concluídos.
+O log do worker mostra a mesma telemetria local na conexão e um resumo inicial do PC e do cluster:
 
-## 4. Exportar o resultado dos celulares
+```bash
+devorar-worker logs
+```
+
+## Protocolo
+
+Os requests autenticados usam HMAC-SHA256 sobre método, caminho, timestamp, nonce e SHA-256 do corpo. O token não precisa trafegar como header em texto puro em cada request.
+
+Fluxo principal:
+
+```text
+POST /v1/register
+POST /v1/heartbeat
+POST /v1/claim
+POST /v1/result
+GET  /v1/status
+```
+
+`/v1/heartbeat` também atualiza a telemetria do worker.
+
+Jobs usam lease. Se um aparelho cair, o job pode voltar para a fila depois do vencimento, até o limite de tentativas.
+
+## Porta e rede
+
+A configuração padrão usa TCP 8765 e bind `0.0.0.0` no PC. O `windows_start.ps1` cria uma regra de entrada do Windows Firewall para `LocalSubnet`.
+
+PC e celulares devem conseguir alcançar um ao outro na rede local. Algumas redes Wi-Fi de convidados usam isolamento entre clientes; nesse caso os celulares não conseguirão conectar mesmo com a porta aberta.
+
+Não faça port-forward da porta do Devorar para a Internet pública.
+
+## Estado científico
+
+O worker atual executa `remote_bf16_head_teacher` sobre linhas completas BF16 de `head.weight` e ativações sintéticas determinísticas. Isso produz sinais numéricos verificáveis vindos de pesos reais da revisão fixada, mas ainda não produz a resposta linguística completa do DeepSeek.
+
+Para chegar a um professor completo por pesos remotos ainda seriam necessários, entre outros componentes:
+
+- embeddings;
+- normalizações;
+- atenção;
+- KV cache;
+- roteadores MoE;
+- experts selecionados;
+- formatos FP4/FP8 do corpo;
+- execução camada a camada;
+- validação contra um runtime de referência para os mesmos tokens.
+
+## Exportação e treino
 
 No PC:
 
-```bash
+```powershell
 python distributed_export.py
-```
-
-Isso cria:
-
-```text
-cluster-state/teacher-head-samples.jsonl
-```
-
-Cada linha contém a fonte, seed, hash da ativação e logits das linhas da cabeça de saída processadas por um worker.
-
-## 5. Treinamento experimental no PC
-
-Depois que os jobs necessários terminarem:
-
-```bash
 python distributed_train_head.py --rank 8 --epochs 1000
 ```
 
-O comando cria:
-
-```text
-cluster-state/student-head.safetensors
-cluster-state/student-head-manifest.json
-```
-
-Esse estágio faz treinamento real: um pequeno operador low-rank aprende a reproduzir os alvos que os celulares calcularam a partir das linhas BF16 remotas de `head.weight`.
-
-Ele é deliberadamente chamado de `student-head`, e não de LLM. Não possui tokenizer, transformer completo, roteamento MoE nem geração de texto.
-
-## O que já funciona
-
-- vários celulares e PCs podem trabalhar ao mesmo tempo;
-- cada worker baixa somente intervalos necessários dos pesos remotos;
-- o DeepSeek completo não é materializado nos celulares;
-- processamento numérico ocorre no worker;
-- resultados vão para o PC;
-- fila é persistente e retomável;
-- jobs com worker desconectado voltam à fila;
-- autenticação HMAC evita transmitir o segredo do cluster;
-- existe exportação dos sinais do professor;
-- existe um primeiro treinamento real de um surrogate de cabeça de saída.
-
-## O que ainda falta para o objetivo completo
-
-O `DeepSeek-V4-Flash` é MoE e usa formatos quantizados no corpo do checkpoint. A versão atual do Devorar ainda não executa o transformer inteiro por streaming. Portanto o cluster ainda não pode afirmar que obteve respostas, logits completos ou comportamento linguístico do DeepSeek apenas lendo os pesos por Range.
-
-Para transformar esta infraestrutura em treinamento de um LLM estudante completo, os gates seguintes são:
-
-1. decodificar de forma validada todos os formatos usados nas camadas relevantes, inclusive os pesos quantizados;
-2. executar embedding, atenção, normalizações, mHC, roteadores e experts na ordem correta;
-3. distribuir esse grafo por jobs sem baixar o checkpoint inteiro em um único dispositivo;
-4. comparar os logits completos com um runtime oficial para os mesmos tokens;
-5. somente depois usar esses logits/ativações reais como supervisão de distilação de um estudante;
-6. distribuir também gradientes ou lotes do estudante entre os workers, caso o custo de comunicação compense.
-
-A infraestrutura nova foi feita para esses próximos tipos de job serem adicionados sem trocar o protocolo PC ↔ Termux.
+O primeiro `student-head` é um surrogate experimental, não um LLM completo.
