@@ -7,7 +7,6 @@ import os
 import shlex
 import sys
 import threading
-import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -61,12 +60,25 @@ class HardwareCoordinatorHandler(base.CoordinatorHandler):
             self._json(500, {"ok": False, "error": f"internal error: {type(error).__name__}"})
 
 
-def _termux_block(server_url: str, token: str, processes: int) -> str:
+def _termux_install_block(server_url: str, token: str, processes: int) -> str:
     continuation = " " + chr(92)
     return "\n".join(
         (
             "pkg update -y && pkg install -y python git tmux &&" + continuation,
             'if [ -d "$HOME/Devorar/.git" ]; then git -C "$HOME/Devorar" pull --ff-only; else git clone --depth 1 https://github.com/DragonBRX/Devorar.git "$HOME/Devorar"; fi &&' + continuation,
+            'cd "$HOME/Devorar" && chmod +x termux_device_install.sh &&' + continuation,
+            f"DEVORAR_SERVER={shlex.quote(server_url)} DEVORAR_CLUSTER_TOKEN={shlex.quote(token)} DEVORAR_PROCESSES={shlex.quote(str(processes))} ./termux_device_install.sh",
+        )
+    )
+
+
+def _termux_reinstall_block(server_url: str, token: str, processes: int) -> str:
+    continuation = " " + chr(92)
+    return "\n".join(
+        (
+            "pkg update -y && pkg install -y python git tmux &&" + continuation,
+            '(tmux kill-session -t devorar-worker 2>/dev/null || true) &&' + continuation,
+            'rm -rf "$HOME/Devorar" && git clone --depth 1 https://github.com/DragonBRX/Devorar.git "$HOME/Devorar" &&' + continuation,
             'cd "$HOME/Devorar" && chmod +x termux_device_install.sh &&' + continuation,
             f"DEVORAR_SERVER={shlex.quote(server_url)} DEVORAR_CLUSTER_TOKEN={shlex.quote(token)} DEVORAR_PROCESSES={shlex.quote(str(processes))} ./termux_device_install.sh",
         )
@@ -112,7 +124,10 @@ def print_dashboard(state: ClusterState, reason: str = "atualização") -> None:
         total = format_bytes(meta.get("ram_total_bytes"))
         available = format_bytes(meta.get("ram_available_bytes"))
         state_text = "ONLINE" if online else f"OFFLINE {item['age']:.0f}s"
-        print(f"- {label} [{state_text}] | CPU: {cpu} | núcleos: {cores} | RAM: {total} total / {available} disponível", flush=True)
+        print(
+            f"- {label} [{state_text}] | CPU: {cpu} | núcleos: {cores} | RAM: {total} total / {available} disponível",
+            flush=True,
+        )
     print("=== FIM HARDWARE ===\n", flush=True)
 
 
@@ -122,6 +137,39 @@ def _dashboard_loop(state: ClusterState, seconds: int, stop: threading.Event) ->
             print_dashboard(state)
         except Exception as error:
             print(f"Aviso: painel de hardware falhou: {error}", file=sys.stderr, flush=True)
+
+
+def _prepare_jobs_loop(
+    args: argparse.Namespace,
+    state: ClusterState,
+    state_dir: Path,
+    stop: threading.Event,
+) -> None:
+    retry_seconds = 5
+    while not stop.is_set():
+        try:
+            print("Preparando plano remoto do DeepSeek em segundo plano...", flush=True)
+            jobs, plan_meta = base.build_jobs(args)
+            added = state.add_jobs(jobs)
+            (state_dir / "plan.json").write_text(
+                json.dumps(plan_meta, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            print(
+                f"Plano remoto pronto: {plan_meta['jobs']} jobs / {plan_meta['selected_rows']} linhas; novos jobs={added}",
+                flush=True,
+            )
+            return
+        except Exception as error:
+            print(
+                f"Aviso: não foi possível preparar os jobs agora ({type(error).__name__}: {error}). "
+                f"O servidor continua ativo; nova tentativa em {retry_seconds}s.",
+                file=sys.stderr,
+                flush=True,
+            )
+            if stop.wait(retry_seconds):
+                return
+            retry_seconds = min(retry_seconds * 2, 60)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -140,46 +188,72 @@ def main(argv: Sequence[str] | None = None) -> int:
     state_dir.mkdir(parents=True, exist_ok=True)
     try:
         token, token_file, token_created = base._resolve_token(args, state_dir)
-        state = ClusterState(state_dir / "cluster.sqlite3", lease_seconds=args.lease_seconds, max_attempts=args.max_attempts)
-        if not args.no_create_jobs:
-            jobs, plan_meta = base.build_jobs(args)
-            added = state.add_jobs(jobs)
-            (state_dir / "plan.json").write_text(json.dumps(plan_meta, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-            print(f"Plano remoto: {plan_meta['jobs']} jobs / {plan_meta['selected_rows']} linhas; novos jobs={added}")
+        state = ClusterState(
+            state_dir / "cluster.sqlite3",
+            lease_seconds=args.lease_seconds,
+            max_attempts=args.max_attempts,
+        )
 
         base.CoordinatorHandler = HardwareCoordinatorHandler
         server = base.CoordinatorHTTPServer((args.host, args.port), state, token)
         advertised_host = args.advertise_host or base._detect_lan_host()
         server_url = f"http://{advertised_host}:{args.port}"
-        print(f"Coordenador Devorar: http://{args.host}:{args.port}")
-        print(f"Endereço para celulares: {server_url}")
+
+        print(f"Coordenador Devorar: http://{args.host}:{args.port}", flush=True)
+        print(f"Endereço para celulares: {server_url}", flush=True)
         if token_file is not None:
-            print(f"Token do cluster: {token_file}")
+            print(f"Token do cluster: {token_file}", flush=True)
             if token_created:
-                print("Novo token criado para este cluster.")
+                print("Novo token criado para este cluster.", flush=True)
+
         print_dashboard(state, "inicialização")
         if not args.no_termux_block:
-            print("=== TERMUX: COLE ESTE BLOCO INTEIRO EM CADA CELULAR ===")
-            print(_termux_block(server_url, token, args.termux_processes))
-            print("=== FIM DO BLOCO TERMUX ===\n")
+            print("=== TERMUX: INSTALAÇÃO DO ZERO / CONECTAR ===", flush=True)
+            print(_termux_install_block(server_url, token, args.termux_processes), flush=True)
+            print("=== FIM INSTALAÇÃO TERMUX ===\n", flush=True)
+            print("=== TERMUX: REINSTALAÇÃO LIMPA ===", flush=True)
+            print(_termux_reinstall_block(server_url, token, args.termux_processes), flush=True)
+            print("=== FIM REINSTALAÇÃO TERMUX ===\n", flush=True)
+            print(
+                "Os blocos acima já podem ser usados agora. Os celulares conectam e aguardam enquanto os jobs são preparados.",
+                flush=True,
+            )
 
         stop = threading.Event()
-        thread = None
+        dashboard_thread = None
         if args.status_seconds:
-            thread = threading.Thread(target=_dashboard_loop, args=(state, args.status_seconds, stop), daemon=True)
-            thread.start()
+            dashboard_thread = threading.Thread(
+                target=_dashboard_loop,
+                args=(state, args.status_seconds, stop),
+                daemon=True,
+                name="devorar-dashboard",
+            )
+            dashboard_thread.start()
+
+        jobs_thread = None
+        if not args.no_create_jobs:
+            jobs_thread = threading.Thread(
+                target=_prepare_jobs_loop,
+                args=(args, state, state_dir, stop),
+                daemon=True,
+                name="devorar-job-preparation",
+            )
+            jobs_thread.start()
+
         try:
             server.serve_forever(poll_interval=0.5)
         except KeyboardInterrupt:
             pass
         finally:
             stop.set()
-            if thread is not None:
-                thread.join(timeout=1.0)
+            if dashboard_thread is not None:
+                dashboard_thread.join(timeout=1.0)
+            if jobs_thread is not None:
+                jobs_thread.join(timeout=1.0)
             server.server_close()
         return 0
     except (ClusterError, FrontierScanError, OSError) as error:
-        print(f"ERROR: {error}", file=sys.stderr)
+        print(f"ERROR: {error}", file=sys.stderr, flush=True)
         return 2
 
 
