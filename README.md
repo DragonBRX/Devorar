@@ -9,7 +9,7 @@ DeepSeek no Hugging Face
         ├── HTTP Range ──> Android / Termux 2 ─┤
         ├── HTTP Range ──> Android / Termux N ─┤
         │                                       │
-        └──────────────────────────────────────┘
+        └───────────────────────────────────────┘
                                                 ▼
                                       PC Windows / PowerShell
                                       coordenador + resultados
@@ -123,12 +123,12 @@ Jobs: fila=180 ativos=4 concluídos=72 falhos=0 | dispositivos=3
 === FIM HARDWARE ===
 ```
 
-Cada worker envia telemetria de RAM atualizada por heartbeat. No celular, ao conectar, o log também mostra o hardware local e um resumo inicial do PC e dos dispositivos já registrados.
+Cada worker envia telemetria de RAM atualizada por heartbeat. No celular, ao conectar, o log também registra o hardware local.
 
 Para mudar o intervalo do painel ao executar diretamente o Python:
 
 ```powershell
-python distributed_server.py --status-seconds 30
+python windows_server.py --status-seconds 30
 ```
 
 Use `--status-seconds 0` para desligar somente a impressão periódica; a telemetria e o endpoint de status continuam ativos.
@@ -138,7 +138,7 @@ Use `--status-seconds 0` para desligar somente a impressão periódica; a teleme
 No Windows, Linux ou outro PC com Python:
 
 ```powershell
-python distributed_server.py --host 0.0.0.0 --port 8765
+python windows_server.py --host 0.0.0.0 --port 8765
 ```
 
 O servidor cria:

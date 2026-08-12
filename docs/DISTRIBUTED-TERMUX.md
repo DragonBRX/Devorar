@@ -100,7 +100,7 @@ O heartbeat atualiza a RAM disponível enquanto o worker está funcionando.
 O servidor imprime o hardware do PC na inicialização e, por padrão, atualiza o painel a cada 15 segundos.
 
 ```powershell
-python distributed_server.py --status-seconds 15
+python windows_server.py --status-seconds 15
 ```
 
 O painel agrega os registros por `device_id`, evitando contar cada processo como um telefone diferente.
@@ -123,7 +123,7 @@ Também existe:
 devorar-worker hardware
 ```
 
-O log do worker mostra a mesma telemetria local na conexão e um resumo inicial do PC e do cluster:
+O log do worker mostra a mesma telemetria local na conexão:
 
 ```bash
 devorar-worker logs
