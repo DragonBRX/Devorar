@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import shlex
 import socket
 import sys
 import threading
@@ -108,19 +106,19 @@ def _physical_devices(status: Mapping[str, Any]) -> list[dict[str, Any]]:
     return sorted(devices.values(), key=lambda item: item["age"])
 
 
-def print_dashboard(state: ClusterState, reason: str = "atualização") -> None:
+def print_dashboard(state: ClusterState, reason: str = "ATUALIZAÇÃO") -> None:
     status = state.status()
     pc = collect_system_info(device_id="pc-coordinator")
     jobs = status["jobs"]
     devices = _physical_devices(status)
-    print(f"\n=== DEVORAR HARDWARE / {reason} ===", flush=True)
+    print(f"\n=== DEVORAR / {reason} ===", flush=True)
     print("PC:", describe_system(pc), flush=True)
     print(
         f"Jobs: fila={jobs['queued']} ativos={jobs['leased']} concluídos={jobs['done']} falhos={jobs['failed']} | dispositivos={len(devices)}",
         flush=True,
     )
     if not devices:
-        print("- nenhum celular conectado ainda", flush=True)
+        print("STATUS: AGUARDANDO DISPOSITIVOS TERMUX NA MESMA WI-FI...", flush=True)
     for item in devices:
         worker = item["worker"]
         meta = item["meta"]
@@ -135,7 +133,22 @@ def print_dashboard(state: ClusterState, reason: str = "atualização") -> None:
             f"- {label} [{state_text}] | CPU: {cpu} | núcleos: {cores} | RAM: {total} total / {available} disponível",
             flush=True,
         )
-    print("=== FIM HARDWARE ===\n", flush=True)
+    print("=== FIM STATUS ===\n", flush=True)
+
+
+def _print_ready_banner(discovery_enabled: bool) -> None:
+    print("", flush=True)
+    print("============================================================", flush=True)
+    print("                 DEVORAR ONLINE", flush=True)
+    print("============================================================", flush=True)
+    print("Servidor do PC: PRONTO", flush=True)
+    print(
+        "Descoberta automática na Wi-Fi: ATIVA" if discovery_enabled else "Descoberta automática na Wi-Fi: DESATIVADA",
+        flush=True,
+    )
+    print("Estado: AGUARDANDO DISPOSITIVOS TERMUX", flush=True)
+    print("Você pode deixar esta janela aberta. O servidor já iniciou.", flush=True)
+    print("============================================================\n", flush=True)
 
 
 def _dashboard_loop(state: ClusterState, seconds: int, stop: threading.Event) -> None:
@@ -143,7 +156,7 @@ def _dashboard_loop(state: ClusterState, seconds: int, stop: threading.Event) ->
         try:
             print_dashboard(state)
         except Exception as error:
-            print(f"Aviso: painel de hardware falhou: {error}", file=sys.stderr, flush=True)
+            print(f"[PAINEL] Aviso: {error}", file=sys.stderr, flush=True)
 
 
 def _prepare_jobs_loop(
@@ -155,7 +168,7 @@ def _prepare_jobs_loop(
     retry_seconds = 5
     while not stop.is_set():
         try:
-            print("Preparando plano remoto do DeepSeek em segundo plano...", flush=True)
+            print("[SEGUNDO PLANO] Preparando os jobs remotos do DeepSeek. O servidor continua pronto para celulares.", flush=True)
             jobs, plan_meta = base.build_jobs(args)
             added = state.add_jobs(jobs)
             (state_dir / "plan.json").write_text(
@@ -163,14 +176,14 @@ def _prepare_jobs_loop(
                 encoding="utf-8",
             )
             print(
-                f"Plano remoto pronto: {plan_meta['jobs']} jobs / {plan_meta['selected_rows']} linhas; novos jobs={added}",
+                f"[SEGUNDO PLANO] Jobs prontos: {plan_meta['jobs']} jobs / {plan_meta['selected_rows']} linhas; novos={added}.",
                 flush=True,
             )
             return
         except Exception as error:
             print(
-                f"Aviso: não foi possível preparar os jobs agora ({type(error).__name__}: {error}). "
-                f"O servidor continua ativo; nova tentativa em {retry_seconds}s.",
+                f"[SEGUNDO PLANO] DeepSeek ainda não pôde ser preparado ({type(error).__name__}: {error}). "
+                f"O servidor segue ONLINE; nova tentativa em {retry_seconds}s.",
                 file=sys.stderr,
                 flush=True,
             )
@@ -223,7 +236,8 @@ def _lan_discovery_loop(
                     pc_name=pc_name,
                 )
                 sock.sendto(response, address)
-                print(f"Descoberta LAN: celular encontrou este PC ({source_ip}).", flush=True)
+                print(f"\n[NOVO DISPOSITIVO] Termux encontrado na rede: {source_ip}", flush=True)
+                print("[NOVO DISPOSITIVO] Configuração enviada. Aguardando o worker registrar o hardware...\n", flush=True)
             except DiscoveryError:
                 continue
     finally:
@@ -263,18 +277,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not args.no_lan_discovery:
             discovery_socket = _create_discovery_socket(args.discovery_port)
 
-        print(f"Coordenador Devorar ativo na rede local (TCP {args.port}).", flush=True)
-        if discovery_socket is not None:
-            print(
-                f"Descoberta automática ativa (UDP {args.discovery_port}). No Termux não é necessário digitar IP, porta ou token.",
-                flush=True,
-            )
-        if token_file is not None:
-            print(f"Token privado do cluster: {token_file}", flush=True)
-            if token_created:
-                print("Novo token criado para este cluster.", flush=True)
+        print("Serviços de rede do Devorar abertos com sucesso.", flush=True)
+        if token_file is not None and token_created:
+            print("Credencial privada do cluster criada.", flush=True)
 
-        print_dashboard(state, "inicialização")
+        print_dashboard(state, "INICIALIZAÇÃO")
         if not args.no_termux_block:
             print("=== TERMUX: INSTALAÇÃO AUTOMÁTICA NA MESMA WI-FI ===", flush=True)
             print(_termux_install_block(), flush=True)
@@ -282,10 +289,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("=== TERMUX: REINSTALAÇÃO AUTOMÁTICA ===", flush=True)
             print(_termux_reinstall_block(), flush=True)
             print("=== FIM REINSTALAÇÃO TERMUX ===\n", flush=True)
-            print(
-                "Os blocos não contêm IP, porta nem token. O celular encontra este PC automaticamente pela rede local.",
-                flush=True,
-            )
+            print("Não é necessário informar IP, porta ou token no celular.", flush=True)
+
+        _print_ready_banner(discovery_socket is not None)
 
         stop = threading.Event()
         discovery_thread = None
@@ -327,7 +333,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             server.serve_forever(poll_interval=0.5)
         except KeyboardInterrupt:
-            pass
+            print("\nEncerrando Devorar...", flush=True)
         finally:
             stop.set()
             server.server_close()
@@ -337,6 +343,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dashboard_thread.join(timeout=1.0)
             if jobs_thread is not None:
                 jobs_thread.join(timeout=1.0)
+            print("Devorar encerrado.", flush=True)
         return 0
     except (ClusterError, FrontierScanError, OSError) as error:
         print(f"ERROR: {error}", file=sys.stderr, flush=True)
