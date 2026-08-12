@@ -52,26 +52,74 @@ function Enable-DevorarFirewall {
     Write-Host "[OK] Firewall liberado somente para a rede local."
 }
 
-function Resolve-PythonCommand {
-    $python = Get-Command python -ErrorAction SilentlyContinue
-    if ($python -and $python.Source) {
-        return @{
-            FilePath = $python.Source
-            Prefix = @()
-            Display = $python.Source
-        }
-    }
+function Test-PythonCandidate {
+    param(
+        [string]$FilePath,
+        [string[]]$Prefix
+    )
 
+    $probeId = [Guid]::NewGuid().ToString("N")
+    $probeOut = Join-Path $env:TEMP "devorar-python-$probeId.out"
+    $probeErr = Join-Path $env:TEMP "devorar-python-$probeId.err"
+    $arguments = @()
+    $arguments += $Prefix
+    $arguments += @("-c", "__import__('sys').stdout.write(__import__('sys').executable)")
+
+    try {
+        $params = @{
+            FilePath = $FilePath
+            ArgumentList = $arguments
+            NoNewWindow = $true
+            RedirectStandardOutput = $probeOut
+            RedirectStandardError = $probeErr
+            PassThru = $true
+        }
+        $process = Start-Process @params
+        if (-not $process.WaitForExit(5000)) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            return $false
+        }
+        if ($process.ExitCode -ne 0) {
+            return $false
+        }
+        $result = ""
+        if (Test-Path $probeOut) {
+            $result = (Get-Content -Raw -Path $probeOut -ErrorAction SilentlyContinue).Trim()
+        }
+        return -not [string]::IsNullOrWhiteSpace($result)
+    } catch {
+        return $false
+    } finally {
+        Remove-Item $probeOut, $probeErr -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Resolve-PythonCommand {
     $launcher = Get-Command py -ErrorAction SilentlyContinue
     if ($launcher -and $launcher.Source) {
-        return @{
-            FilePath = $launcher.Source
-            Prefix = @("-3")
-            Display = "$($launcher.Source) -3"
+        if (Test-PythonCandidate -FilePath $launcher.Source -Prefix @("-3")) {
+            return @{
+                FilePath = $launcher.Source
+                Prefix = @("-3")
+                Display = "$($launcher.Source) -3"
+            }
         }
+        Write-Host "[AVISO] O launcher 'py -3' existe, mas nao respondeu ao teste."
     }
 
-    throw "Python nao encontrado. Execute primeiro windows_install.ps1."
+    $python = Get-Command python -ErrorAction SilentlyContinue
+    if ($python -and $python.Source) {
+        if (Test-PythonCandidate -FilePath $python.Source -Prefix @()) {
+            return @{
+                FilePath = $python.Source
+                Prefix = @()
+                Display = $python.Source
+            }
+        }
+        Write-Host "[AVISO] O comando 'python' existe, mas nao respondeu ao teste."
+    }
+
+    throw "Nenhum Python funcional respondeu em ate 5 segundos. Execute windows_install.ps1 novamente."
 }
 
 function Show-LogTail {
@@ -137,7 +185,7 @@ Enable-DevorarFirewall -TcpPort $Port -UdpPort $DiscoveryPort
 
 Write-Host "[2/4] Verificando Python..."
 $pythonCommand = Resolve-PythonCommand
-Write-Host "[OK] Python: $($pythonCommand.Display)"
+Write-Host "[OK] Python respondeu: $($pythonCommand.Display)"
 
 $runtimeDir = Join-Path $repo "cluster-state\runtime"
 New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
@@ -158,14 +206,16 @@ $serverArguments += @(
 )
 
 Write-Host "[3/4] Iniciando o processo do servidor..."
-$serverProcess = Start-Process \
-    -FilePath $pythonCommand.FilePath \
-    -ArgumentList $serverArguments \
-    -WorkingDirectory $repo \
-    -NoNewWindow \
-    -RedirectStandardOutput $stdoutPath \
-    -RedirectStandardError $stderrPath \
-    -PassThru
+$startParams = @{
+    FilePath = $pythonCommand.FilePath
+    ArgumentList = $serverArguments
+    WorkingDirectory = $repo
+    NoNewWindow = $true
+    RedirectStandardOutput = $stdoutPath
+    RedirectStandardError = $stderrPath
+    PassThru = $true
+}
+$serverProcess = Start-Process @startParams
 
 Set-Content -Path $pidPath -Value $serverProcess.Id -Encoding ascii
 Write-Host "[OK] Processo iniciado. PID: $($serverProcess.Id)"
@@ -174,6 +224,7 @@ Write-Host "[4/4] Confirmando que o coordenador respondeu..."
 $deadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
 $online = $false
 while ((Get-Date) -lt $deadline) {
+    $serverProcess.Refresh()
     if ($serverProcess.HasExited) {
         break
     }
@@ -191,7 +242,9 @@ while ((Get-Date) -lt $deadline) {
 }
 
 if (-not $online) {
-    if (-not $serverProcess.HasExited) {
+    $serverProcess.Refresh()
+    $exitedEarly = $serverProcess.HasExited
+    if (-not $exitedEarly) {
         Stop-Process -Id $serverProcess.Id -Force -ErrorAction SilentlyContinue
     }
     Remove-Item $pidPath -Force -ErrorAction SilentlyContinue
@@ -199,10 +252,10 @@ if (-not $online) {
     Write-Host "==============================================" -ForegroundColor Red
     Write-Host "       DEVORAR - FALHA AO INICIAR" -ForegroundColor Red
     Write-Host "==============================================" -ForegroundColor Red
-    if ($serverProcess.HasExited) {
+    if ($exitedEarly) {
         Write-Host "O processo Python encerrou antes do servidor ficar pronto."
     } else {
-        Write-Host "O servidor nao respondeu em $StartupTimeoutSeconds segundos."
+        Write-Host "O servidor nao respondeu em $StartupTimeoutSeconds segundos e foi encerrado."
     }
     Show-LogTail -StdoutPath $stdoutPath -StderrPath $stderrPath
     Write-Host ""
@@ -219,7 +272,7 @@ Write-Host "============================================================" -Foreg
 Write-Host "Servidor do PC: PRONTO"
 Write-Host "Descoberta automatica na Wi-Fi: ATIVA"
 Write-Host "Estado: AGUARDANDO DISPOSITIVOS TERMUX"
-Write-Host "O servidor respondeu ao teste de saude e ja esta funcionando."
+Write-Host "Teste de saude: OK"
 Write-Host "============================================================" -ForegroundColor Green
 Write-Host ""
 
