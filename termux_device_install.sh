@@ -2,6 +2,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="$HOME/.config/devorar/worker.env"
+PREVIOUS_DEVICE_ID=""
+
+if [ -f "$CONFIG_FILE" ]; then
+    PREVIOUS_DEVICE_ID="$(bash -c '. "$1"; printf "%s" "${DEVORAR_DEVICE_ID:-}"' _ "$CONFIG_FILE")"
+fi
+
 : "${DEVORAR_SERVER:?DEVORAR_SERVER ausente}"
 : "${DEVORAR_CLUSTER_TOKEN:?DEVORAR_CLUSTER_TOKEN ausente}"
 DEVORAR_PROCESSES="${DEVORAR_PROCESSES:-1}"
@@ -10,12 +17,14 @@ cd "$SCRIPT_DIR"
 chmod +x termux_install.sh
 ./termux_install.sh
 
-CONFIG_FILE="$HOME/.config/devorar/worker.env"
 BIN_FILE="$PREFIX/bin/devorar-worker"
 LOG_DIR="$HOME/.local/state/devorar"
 DEVICE_ID=""
 if [ -f "$CONFIG_FILE" ]; then
     DEVICE_ID="$(bash -c '. "$1"; printf "%s" "${DEVORAR_DEVICE_ID:-}"' _ "$CONFIG_FILE")"
+fi
+if [ -z "$DEVICE_ID" ] && [ -n "$PREVIOUS_DEVICE_ID" ]; then
+    DEVICE_ID="$PREVIOUS_DEVICE_ID"
 fi
 if [ -z "$DEVICE_ID" ]; then
     DEVICE_ID="$(python - <<'PY'
@@ -23,9 +32,9 @@ import uuid
 print(uuid.uuid4().hex)
 PY
 )"
-    printf 'DEVORAR_DEVICE_ID=%q\n' "$DEVICE_ID" >> "$CONFIG_FILE"
-    chmod 600 "$CONFIG_FILE"
 fi
+printf 'DEVORAR_DEVICE_ID=%q\n' "$DEVICE_ID" >> "$CONFIG_FILE"
+chmod 600 "$CONFIG_FILE"
 
 cat > "$BIN_FILE" <<'WORKER'
 #!/data/data/com.termux/files/usr/bin/bash
@@ -61,6 +70,15 @@ case "$ACTION" in
         echo "Worker reiniciado: $DEVORAR_WORKER_NAME -> $DEVORAR_SERVER"
         hardware
         ;;
+    reinstall)
+        tmux kill-session -t "$SESSION" 2>/dev/null || true
+        cd "$HOME"
+        rm -rf "$HOME/Devorar"
+        git clone --depth 1 https://github.com/DragonBRX/Devorar.git "$HOME/Devorar"
+        cd "$HOME/Devorar"
+        chmod +x termux_device_install.sh
+        DEVORAR_SERVER="$DEVORAR_SERVER" DEVORAR_CLUSTER_TOKEN="$DEVORAR_CLUSTER_TOKEN" DEVORAR_PROCESSES="$DEVORAR_PROCESSES" DEVORAR_WORKER_NAME="$DEVORAR_WORKER_NAME" ./termux_device_install.sh
+        ;;
     status)
         if tmux has-session -t "$SESSION" 2>/dev/null; then STATE="ativo"; else STATE="parado"; fi
         echo "Worker $STATE: $DEVORAR_WORKER_NAME -> $DEVORAR_SERVER"
@@ -88,7 +106,7 @@ case "$ACTION" in
         done
         ;;
     *)
-        echo "Uso: devorar-worker {start|stop|restart|status|hardware|logs|foreground}" >&2
+        echo "Uso: devorar-worker {start|stop|restart|reinstall|status|hardware|logs|foreground}" >&2
         exit 2
         ;;
 esac
